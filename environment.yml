@@ -1,0 +1,20 @@
+name: video-to-3d
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip>=24
+  - numpy<2
+  - ffmpeg
+  - pip:
+      - einops>=0.7
+      - safetensors>=0.4
+      - huggingface_hub>=0.24
+      - open3d>=0.18
+      - rerun-sdk>=0.21
+      - open_clip_torch>=2.26
+      - tqdm>=4.66
+      - opencv-python>=4.9
+      - Pillow>=10
+      - rich>=13

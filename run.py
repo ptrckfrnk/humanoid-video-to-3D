@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""
+Video → 3D Scene Reconstruction
+================================
+Internship Challenge — Humanoid (London)
+
+Examples
+--------
+Basic geometry:
+    python run.py examples/room.mp4
+
+With semantic labels:
+    python run.py examples/room.mp4 --semantic
+
+Custom labels, more frames, mesh output:
+    python run.py examples/room.mp4 --frames 80 --semantic \\
+        --labels "chair,table,sofa,door,window" --mesh
+
+Force CUDA on a Linux workstation:
+    python run.py examples/room.mp4 --device cuda --model vggt-omega
+
+Skip the interactive viewer (just save files):
+    python run.py examples/room.mp4 --no-viewer
+"""
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+from rich.console import Console
+
+console = Console()
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Reconstruct a 3D scene from a phone video.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("video", type=Path,
+                   help="Path to input video (MP4, MOV, AVI, …)")
+    p.add_argument("--output", "-o", type=Path, default=Path("outputs"),
+                   help="Directory for all output files")
+    p.add_argument("--frames", "-n", type=int, default=50,
+                   help="Number of frames to sample (50 is safe for M4 Pro; "
+                        "use 80-100 on CUDA for denser clouds)")
+    p.add_argument("--model", choices=["auto", "vggt", "vggt-omega"],
+                   default="auto",
+                   help="'auto': VGGT-Omega on CUDA, VGGT-1B otherwise")
+    p.add_argument("--device", type=str, default=None,
+                   help="Force hardware backend (cuda / mps / cpu)")
+    p.add_argument("--conf", type=float, default=1.5,
+                   help="Confidence threshold for point filtering "
+                        "(higher → fewer but cleaner points)")
+    p.add_argument("--semantic", action="store_true",
+                   help="Run open-vocabulary semantic labeling (SAM2 + CLIP)")
+    p.add_argument("--labels", type=str, default=None,
+                   help="Custom label set, comma-separated. "
+                        "Default: 20 common indoor categories")
+    p.add_argument("--mesh", action="store_true",
+                   help="Generate a Poisson surface mesh from the point cloud")
+    p.add_argument("--no-viewer", action="store_true",
+                   help="Skip Rerun viewer (just save .ply files)")
+    p.add_argument("--image-size", type=int, default=518,
+                   help="Resolution passed to VGGT preprocessing")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    from utils.device import get_device, get_dtype
+    from pipeline.extract_frames import extract_frames
+    from pipeline.reconstruct import reconstruct
+    from pipeline.postprocess import postprocess
+
+    device = get_device(args.device)
+    dtype  = get_dtype(device)
+
+    # MPS (Apple Silicon) can't fit 50 frames in the global attention — cap at 20
+    if device.type == "mps" and args.frames == 50:
+        args.frames = 20
+        console.print("[dim]Note: defaulting to 20 frames on MPS to fit in memory. "
+                      "Use --frames N to override.[/dim]")
+
+    console.rule("[bold cyan]Video → 3D Scene Reconstruction[/bold cyan]")
+    console.print(f"  Video   : [green]{args.video}[/green]")
+    console.print(f"  Device  : [yellow]{device}[/yellow]  (dtype={dtype})")
+    console.print(f"  Frames  : {args.frames}")
+    console.print(f"  Model   : {args.model}")
+    console.print(f"  Semantic: {'yes' if args.semantic else 'no'}")
+    console.print()
+
+    if not args.video.exists():
+        console.print(f"[red]Error:[/red] Video not found: {args.video}")
+        sys.exit(1)
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    frames_dir = args.output / "frames"
+    frames_dir.mkdir(exist_ok=True)
+
+    # ── Stage 1: Extract frames ───────────────────────────────────────────────
+    console.print("[bold]Stage 1 / 4[/bold]  Extracting frames...")
+    t0 = time.time()
+    frame_paths = extract_frames(args.video, args.frames, frames_dir)
+    console.print(f"           → {len(frame_paths)} frames  ({time.time()-t0:.1f}s)")
+
+    # ── Stage 2: 3D Reconstruction ────────────────────────────────────────────
+    console.print("[bold]Stage 2 / 4[/bold]  Running 3D reconstruction...")
+    t0 = time.time()
+    try:
+        result = reconstruct(
+            frame_paths,
+            device=device,
+            dtype=dtype,
+            model_name=args.model,
+            image_size=args.image_size,
+        )
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower() or "invalid buffer size" in str(e).lower():
+            console.print(f"[red]Out of memory.[/red]  Current: --frames {args.frames}")
+            console.print("  Try reducing: --frames 15")
+            sys.exit(1)
+        raise
+    console.print(f"           → done  ({time.time()-t0:.1f}s)")
+
+    # ── Stage 3: Post-process ─────────────────────────────────────────────────
+    console.print("[bold]Stage 3 / 4[/bold]  Building point cloud...")
+    t0 = time.time()
+    scene = postprocess(
+        result,
+        conf_threshold=args.conf,
+        build_mesh=args.mesh,
+        output_dir=args.output,
+    )
+    n_pts = len(scene.point_cloud.points)
+    console.print(f"           → {n_pts:,} points  ({time.time()-t0:.1f}s)")
+
+    # ── Stage 4: Semantics ────────────────────────────────────────────────────
+    semantic = None
+    if args.semantic:
+        console.print("[bold]Stage 4 / 4[/bold]  Semantic labeling (SAM2 + CLIP)...")
+        t0 = time.time()
+        try:
+            from pipeline.semantics import label_scene
+            label_list = (
+                [l.strip() for l in args.labels.split(",")]
+                if args.labels else None
+            )
+            semantic = label_scene(result, scene, label_list, device)
+            unique = len(set(semantic.labels))
+            console.print(f"           → {unique} classes  ({time.time()-t0:.1f}s)")
+        except ImportError as e:
+            console.print(f"  [yellow]⚠  Semantics skipped:[/yellow] {e}")
+            console.print("     Install SAM2 + OpenCLIP (see README) to enable.")
+    else:
+        console.print("[bold]Stage 4 / 4[/bold]  Semantic labeling "
+                      "[dim]— skipped (add --semantic to enable)[/dim]")
+
+    # ── Save outputs ──────────────────────────────────────────────────────────
+    import open3d as o3d
+    console.print()
+    console.print("[bold]Saving outputs…[/bold]")
+
+    ply_path = args.output / "scene.ply"
+    o3d.io.write_point_cloud(str(ply_path), scene.point_cloud)
+    console.print(f"  [green]✓[/green] Point cloud     → {ply_path}")
+
+    if semantic is not None:
+        sem_path = args.output / "scene_semantic.ply"
+        o3d.io.write_point_cloud(str(sem_path), semantic.colored_cloud)
+        console.print(f"  [green]✓[/green] Semantic cloud  → {sem_path}")
+
+    if scene.mesh is not None:
+        mesh_path = args.output / "scene_mesh.ply"
+        o3d.io.write_triangle_mesh(str(mesh_path), scene.mesh)
+        console.print(f"  [green]✓[/green] Surface mesh    → {mesh_path}")
+
+    # ── Visualize ─────────────────────────────────────────────────────────────
+    if not args.no_viewer:
+        console.print()
+        console.print("[bold]Launching Rerun viewer…[/bold]")
+        console.print("  [dim]Browser should open automatically. "
+                      "Press Ctrl+C to stop.[/dim]")
+        try:
+            from viz.viewer import launch_viewer
+            launch_viewer(result, scene, semantic, args.output)
+        except ImportError:
+            console.print(
+                "  [yellow]⚠  rerun-sdk not installed.[/yellow]  "
+                "Open the .ply files in MeshLab or CloudCompare."
+            )
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    console.print()
+    console.rule("[bold green]Done[/bold green]")
+    console.print(f"  All outputs in [green]{args.output}/[/green]")
+    console.print(f"  View in MeshLab: [dim]open {ply_path}[/dim]")
+    if (args.output / "demo.rrd").exists():
+        console.print(f"  Reopen viewer:  [dim]rerun {args.output}/demo.rrd[/dim]")
+    console.print()
+
+
+if __name__ == "__main__":
+    main()

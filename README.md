@@ -1,0 +1,212 @@
+# Video → 3D Scene Reconstruction
+
+A feed-forward pipeline that takes a short indoor phone video and produces a geometrically coherent 3D scene — with optional open-vocabulary semantic labels.
+
+Built for the [Humanoid](https://humanoid.com) Perception & Spatial AI internship challenge.
+
+---
+
+## Demo
+
+```
+python run.py examples/room.mp4 --semantic
+```
+
+<!-- Replace with your actual output screenshots/GIFs once you have run the pipeline -->
+> *Example outputs go here — point cloud render, depth maps, semantic overlay*
+
+---
+
+## What it does
+
+| Stage | What happens |
+|---|---|
+| **1. Frame extraction** | Evenly samples N frames from the video using OpenCV |
+| **2. Feed-forward reconstruction** | VGGT-Omega / VGGT-1B predicts depth maps, camera poses, and dense 3D point maps in a single forward pass — no COLMAP, no iterative optimisation |
+| **3. Point cloud post-processing** | Open3D merges per-frame point maps, filters by confidence, and removes statistical outliers |
+| **4. Semantic labeling** *(optional)* | SAM 2.1 segments each frame; OpenCLIP matches crops to text labels; labels are projected into 3D |
+| **5. Visualization** | Rerun opens an interactive browser viewer showing the RGB frames, depth maps, camera trajectories, and 3D scene |
+
+---
+
+## Setup
+
+### Prerequisites
+
+- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or Anaconda
+- **macOS** (Apple Silicon M1–M4) **or** **Linux with an NVIDIA GPU**
+
+### Step 1 — Create the conda environment
+
+```bash
+conda env create -f environment.yml
+conda activate video-to-3d
+```
+
+### Step 2 — Install PyTorch and model packages
+
+```bash
+bash install.sh
+```
+
+This script auto-detects your hardware and installs:
+- The correct PyTorch build (CUDA 12.1 / MPS / CPU)
+- VGGT-1B (CVPR 2025 Best Paper)
+- VGGT-Omega (CVPR 2026 Oral) — CUDA only
+- SAM 2.1
+
+### Step 3 — (Optional) Pre-download model weights
+
+```bash
+python scripts/download_models.py
+```
+
+This downloads ~5 GB of model weights from HuggingFace so the first run starts immediately. If you skip this step the weights are downloaded automatically on first use.
+
+---
+
+## Usage
+
+```bash
+# Basic reconstruction (geometry only)
+python run.py path/to/video.mp4
+
+# With semantic labels
+python run.py path/to/video.mp4 --semantic
+
+# More frames for a denser cloud (recommended on CUDA)
+python run.py path/to/video.mp4 --frames 80 --semantic
+
+# Custom label vocabulary
+python run.py path/to/video.mp4 --semantic \
+    --labels "chair,table,sofa,door,window,lamp,monitor"
+
+# Generate a surface mesh as well
+python run.py path/to/video.mp4 --mesh
+
+# Force a specific device
+python run.py path/to/video.mp4 --device cuda   # Linux workstation
+python run.py path/to/video.mp4 --device mps    # MacBook
+python run.py path/to/video.mp4 --device cpu    # no GPU
+
+# Just save files, skip the interactive viewer
+python run.py path/to/video.mp4 --no-viewer
+```
+
+### All flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `video` | — | Input video path (MP4, MOV, AVI) |
+| `--output` | `outputs/` | Output directory |
+| `--frames` | `50` | Frames to sample (50 is safe for 16 GB; 80–100 for CUDA) |
+| `--model` | `auto` | `vggt-omega` on CUDA, `vggt` elsewhere |
+| `--device` | auto | Force `cuda` / `mps` / `cpu` |
+| `--conf` | `1.5` | Confidence threshold — higher = cleaner but sparser |
+| `--semantic` | off | Enable SAM2 + CLIP semantic labeling |
+| `--labels` | 20 indoor classes | Custom comma-separated label list |
+| `--mesh` | off | Run Poisson surface reconstruction |
+| `--no-viewer` | off | Skip Rerun, just save `.ply` files |
+
+---
+
+## Outputs
+
+All files are written to `outputs/` (or `--output`):
+
+```
+outputs/
+├── frames/              # extracted PNG frames
+├── scene.ply            # RGB point cloud  ← open in MeshLab
+├── scene_semantic.ply   # semantic cloud   ← coloured by class
+├── scene_mesh.ply       # surface mesh     ← if --mesh
+└── demo.rrd             # Rerun session    ← rerun outputs/demo.rrd
+```
+
+### Viewing the outputs
+
+| Tool | How |
+|---|---|
+| **Rerun** (interactive) | Opened automatically; or `rerun outputs/demo.rrd` |
+| **MeshLab** (free) | `File → Open → scene.ply` |
+| **CloudCompare** (free) | Drag & drop `scene.ply` |
+| **Open3D** (Python) | `import open3d as o3d; o3d.visualization.draw([o3d.io.read_point_cloud("outputs/scene.ply")])` |
+
+The **Rerun viewer** shows everything at once:
+- *Top panel*: fly through the 3D point cloud; camera frustums mark where each frame was taken
+- *Bottom left*: RGB frame — scrub the timeline to walk through the video
+- *Bottom middle*: Depth map — colour = distance from camera
+- *Bottom right*: Semantic overlay (if `--semantic` was used)
+
+---
+
+## Hardware notes
+
+| Hardware | Model used | Typical time (50 frames) |
+|---|---|---|
+| NVIDIA RTX 3090 / 4090 | VGGT-Omega (CVPR 2026) | ~20–30 s |
+| NVIDIA A100 | VGGT-Omega | ~15 s |
+| MacBook M4 Pro (MPS) | VGGT-1B (CVPR 2025) | ~3–6 min |
+| CPU only | VGGT-1B | ~20–40 min |
+
+If you run out of memory, reduce `--frames` (try `30`) or lower `--image-size 384`.
+
+---
+
+## Design choices
+
+### Why VGGT / VGGT-Omega?
+
+Classical pipelines (COLMAP → MVS → mesh) are robust but slow and brittle on textureless surfaces. **VGGT** (Wang et al., CVPR 2025 Best Paper) is a 1B-parameter transformer that estimates camera poses, depth maps, and a dense 3D point cloud from a set of images **in a single feed-forward pass** — no feature matching, no bundle adjustment, no iterative optimisation.
+
+**VGGT-Omega** (Wang et al., CVPR 2026 Oral) is its direct successor, with improved architecture and better depth quality. It is selected automatically on CUDA hardware; the original VGGT-1B is used on Apple Silicon (confirmed MPS-compatible, float32 only).
+
+### Why SAM 2.1 + OpenCLIP for semantics?
+
+Rather than training a dedicated semantic model, we use two powerful off-the-shelf models:
+
+- **SAM 2.1** (Meta) segments every object in each frame automatically, with no prompts.
+- **OpenCLIP** (ViT-B/32, OpenAI weights) embeds each crop and compares it against text embeddings for candidate labels via cosine similarity.
+
+Labels are assigned per-segment in 2D, then projected into 3D using the camera poses and depth maps from VGGT. This gives geometry-semantic alignment essentially for free — the 3D positions come from the same model that produces the labels' parent geometry.
+
+The approach is inspired by [Ov3R](https://arxiv.org/abs/2507.22052) (Gong et al., 2025) but independently implemented, runs on Apple Silicon, and supports an arbitrary open-vocabulary label set at runtime.
+
+### Why Rerun for visualisation?
+
+[Rerun](https://rerun.io) is a spatial data visualiser designed for robotics and perception. In a single browser window it shows video frames, depth maps, camera trajectories, and point clouds all time-linked — exactly the kind of multi-modal output this pipeline produces. Sessions are saved as `.rrd` files that can be shared and reopened without re-running the pipeline.
+
+---
+
+## Project structure
+
+```
+humanoid-video-to-3D/
+├── run.py                  # main entry point
+├── environment.yml         # conda environment (all deps except PyTorch)
+├── install.sh              # platform-aware PyTorch + model installer
+├── pipeline/
+│   ├── extract_frames.py   # video → PNG frames
+│   ├── reconstruct.py      # VGGT / VGGT-Omega inference → point maps
+│   ├── postprocess.py      # Open3D cleanup + optional mesh
+│   └── semantics.py        # SAM2 + CLIP → 3D labels
+├── viz/
+│   └── viewer.py           # Rerun visualization
+├── utils/
+│   └── device.py           # hardware detection (CUDA / MPS / CPU)
+├── scripts/
+│   └── download_models.py  # pre-fetch HuggingFace checkpoints
+└── examples/               # sample inputs
+```
+
+---
+
+## References
+
+- **VGGT**: Wang et al., *Visual Geometry Grounded Transformer*, CVPR 2025 Best Paper. [Paper](https://arxiv.org/abs/2503.11651) · [Code](https://github.com/facebookresearch/vggt)
+- **VGGT-Omega**: Wang et al., *VGGT Omega*, CVPR 2026 Oral. [Paper](https://arxiv.org/abs/2605.15195) · [Code](https://github.com/facebookresearch/vggt-omega)
+- **SAM 2.1**: Ravi et al., *SAM 2*, Meta 2024. [Code](https://github.com/facebookresearch/sam2)
+- **OpenCLIP**: Cherti et al., CVPR 2023. [Code](https://github.com/mlfoundations/open_clip)
+- **Ov3R**: Gong et al., *Open-Vocabulary Semantic 3D Reconstruction from RGB Videos*, arXiv 2025. [Paper](https://arxiv.org/abs/2507.22052)
+- **Open3D**: Zhou et al., arXiv 2018. [Docs](http://www.open3d.org)
+- **Rerun**: [rerun.io](https://rerun.io)
