@@ -149,8 +149,13 @@ def main() -> None:
                 if args.labels else None
             )
             semantic = label_scene(result, scene, label_list, device)
-            unique = len(set(semantic.labels))
-            console.print(f"           → {unique} classes  ({time.time()-t0:.1f}s)")
+            unique_labels = sorted(set(semantic.labels))
+            console.print(f"           → {len(unique_labels)} classes  ({time.time()-t0:.1f}s)")
+            from pipeline.semantics import LABEL_COLORS, _label_color
+            console.print("  [bold]Class legend:[/bold]")
+            for lbl in unique_labels:
+                c = LABEL_COLORS.get(lbl, _label_color(lbl))
+                console.print(f"    [rgb({c[0]},{c[1]},{c[2]})]■[/rgb({c[0]},{c[1]},{c[2]})] {lbl}")
         except ImportError as e:
             console.print(f"  [yellow]⚠  Semantics skipped:[/yellow] {e}")
             console.print("     Install SAM2 + OpenCLIP (see README) to enable.")

@@ -1,21 +1,17 @@
 """
-Rerun 0.33-compatible interactive visualization.
+Rerun 0.33 visualization — saves to .rrd file, then opens viewer.
 
-Layout:
-  ┌─────────────────────────────────────────────────────┐
-  │               3D Scene (main panel)                 │
-  │   · Dense RGB point cloud                           │
-  │   · Camera frustums (one per frame)                 │
-  │   · Camera images pinned in 3D space                │
-  ├──────────────────┬──────────────┬───────────────────┤
-  │   RGB Frame      │  Depth Map   │  Semantic Labels  │
-  │   (timeline)     │  (timeline)  │  (static)         │
-  └──────────────────┴──────────────┴───────────────────┘
+Workflow:
+  1. Log all data to outputs/demo.rrd
+  2. Open the file in Rerun viewer
+  3. Reopen any time with: rerun outputs/demo.rrd
 """
 
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
+import subprocess
+import sys
 
 import numpy as np
 
@@ -34,7 +30,9 @@ def launch_viewer(
 
     rrd_path = output_dir / "demo.rrd"
 
-    rr.init("video-to-3d", spawn=True)
+    # Save to file (no spawn — more reliable)
+    rr.init("video-to-3d")
+    rr.save(str(rrd_path))
 
     # ── Blueprint ─────────────────────────────────────────────────────────────
     bottom_panels = [
@@ -59,70 +57,62 @@ def launch_viewer(
 
     S    = result.images.shape[0]
     H, W = result.images.shape[1:3]
-
-    # Invert extrinsics: cam-from-world → world-from-cam (4x4)
-    c2w = _invert_se3_batch(result.extrinsics)   # (S, 4, 4)
+    c2w  = _invert_se3_batch(result.extrinsics)   # (S, 4, 4)
 
     # ── Per-frame data ────────────────────────────────────────────────────────
-    print(f"  Logging {S} frames to Rerun...")
+    print(f"  Logging {S} frames...")
     for s in range(S):
-        rr.set_time("frame", sequence=s)   # rerun 0.33 API
+        rr.set_time("frame", sequence=s)
 
-        # 2D panels
         rr.log("camera/rgb",   rr.Image(result.images[s]))
         rr.log("camera/depth", rr.DepthImage(result.depth[s], meter=1.0))
 
-        # Camera pose in 3D world — mat3x3 + translation
         R = c2w[s, :3, :3]
         t = c2w[s, :3, 3]
-        rr.log(
-            f"world/cameras/cam_{s:04d}",
-            rr.Transform3D(translation=t, mat3x3=R),
-        )
-        K = result.intrinsics[s]
-        rr.log(
-            f"world/cameras/cam_{s:04d}",
-            rr.Pinhole(image_from_camera=K, width=W, height=H),
-        )
-        # Pin the RGB image to its frustum so it appears in the 3D view
+        rr.log(f"world/cameras/cam_{s:04d}", rr.Transform3D(translation=t, mat3x3=R))
+        rr.log(f"world/cameras/cam_{s:04d}",
+               rr.Pinhole(image_from_camera=result.intrinsics[s], width=W, height=H))
         rr.log(f"world/cameras/cam_{s:04d}/image", rr.Image(result.images[s]))
 
-    # ── RGB point cloud (not time-indexed — always visible) ───────────────────
+    # ── Point cloud ───────────────────────────────────────────────────────────
     rr.set_time("frame", sequence=S - 1)
-
     pts  = np.asarray(scene.point_cloud.points, dtype=np.float32)
     cols = (np.asarray(scene.point_cloud.colors) * 255).astype(np.uint8)
     rr.log("world/scene/geometry", rr.Points3D(positions=pts, colors=cols, radii=0.003))
 
     # ── Semantic cloud ────────────────────────────────────────────────────────
     if semantic is not None:
-        sem_pts  = np.asarray(semantic.colored_cloud.points, dtype=np.float32)
-        sem_cols = (np.asarray(semantic.colored_cloud.colors) * 255).astype(np.uint8)
-        rr.log(
-            "world/scene/semantic",
-            rr.Points3D(positions=sem_pts, colors=sem_cols, radii=0.003),
-        )
+        from pipeline.semantics import LABEL_COLORS, _label_color
+
+        # Build annotation context so Rerun shows class names + legend
+        label_to_id = {l: i for i, l in enumerate(semantic.label_set)}
+        annotations = []
+        for i, label in enumerate(semantic.label_set):
+            c = LABEL_COLORS.get(label, _label_color(label))
+            annotations.append(rr.AnnotationInfo(id=i, label=label, color=(int(c[0]), int(c[1]), int(c[2]), 255)))
+        rr.log("world/scene/semantic", rr.AnnotationContext(annotations), static=True)
+
+        sem_pts   = np.asarray(semantic.colored_cloud.points, dtype=np.float32)
+        class_ids = np.array([label_to_id.get(l, 0) for l in semantic.labels], dtype=np.uint16)
+        rr.log("world/scene/semantic",
+               rr.Points3D(positions=sem_pts, class_ids=class_ids, radii=0.003))
         _log_semantic_overlay(result, semantic, S - 1)
 
-    # Save session to file
-    rr.save(str(rrd_path))
+    print(f"  Saved → {rrd_path}")
 
-    print(f"\n  Rerun session saved → {rrd_path}")
-    print(f"  Reopen later with:  rerun {rrd_path}")
-    print("  Press Ctrl+C in this terminal to exit.\n")
-
-    try:
-        import time
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
+    # ── Open viewer ───────────────────────────────────────────────────────────
+    print(f"  Opening Rerun viewer...")
+    subprocess.Popen(
+        [sys.executable, "-m", "rerun", str(rrd_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    print(f"\n  Reopen any time with: rerun {rrd_path}\n")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _invert_se3_batch(extrinsics: np.ndarray) -> np.ndarray:
-    """Invert (S, 3, 4) cam-from-world matrices → (S, 4, 4) world-from-cam."""
     S   = extrinsics.shape[0]
     c2w = np.tile(np.eye(4, dtype=np.float32), (S, 1, 1))
     R   = extrinsics[:, :3, :3]
@@ -137,7 +127,6 @@ def _log_semantic_overlay(
     semantic:  "SemanticResult",
     frame_idx: int,
 ) -> None:
-    """Log a colour-coded 2D semantic overlay for one frame."""
     import rerun as rr
     from pipeline.semantics import _project_points
 

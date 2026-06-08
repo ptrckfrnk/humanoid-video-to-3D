@@ -59,15 +59,14 @@ def label_scene(
 ) -> SemanticResult:
     import open_clip
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-    from sam2.build_sam import build_sam2
+    from sam2.build_sam import build_sam2_hf
 
     labels = custom_labels or DEFAULT_LABELS
 
     # ── Load SAM 2.1 ─────────────────────────────────────────────────────────
     console.print("  Loading SAM 2.1 Hiera-Small...")
     sam_device = device.type if device.type in ("cuda", "mps") else "cpu"
-    ckpt_path  = _download_sam2()
-    sam_model  = build_sam2("sam2.1_hiera_small.yaml", ckpt_path, device=sam_device)
+    sam_model  = build_sam2_hf("facebook/sam2.1-hiera-small", device=sam_device)
     mask_gen   = SAM2AutomaticMaskGenerator(
         sam_model,
         points_per_side=16,          # coarser grid → faster, still good coverage
@@ -210,9 +209,3 @@ def _project_points(
     return uv[:, :2], depths
 
 
-def _download_sam2() -> str:
-    from huggingface_hub import hf_hub_download
-    return hf_hub_download(
-        repo_id="facebook/sam2.1-hiera-small",
-        filename="sam2.1_hiera_small.pt",
-    )

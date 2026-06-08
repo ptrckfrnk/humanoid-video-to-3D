@@ -52,9 +52,68 @@ def postprocess(
     # Statistical outlier removal — keeps the main surface, removes noise
     pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
 
+    # Align scene so the floor is flat and Y points up
+    pcd, result = _align_to_gravity(pcd, result)
+
     mesh = _build_mesh(pcd) if build_mesh else None
 
     return SceneResult(point_cloud=pcd, mesh=mesh)
+
+
+def _rotation_from_vec_to_vec(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rodrigues rotation matrix that rotates unit vector a onto unit vector b."""
+    v = np.cross(a, b)
+    s = np.linalg.norm(v)
+    c = float(np.dot(a, b))
+    if s < 1e-8:
+        return np.eye(3) if c > 0 else -np.eye(3)
+    Vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + Vx + Vx @ Vx * ((1 - c) / (s * s))
+
+
+def _align_to_gravity(
+    pcd: o3d.geometry.PointCloud,
+    result: ReconstructionResult,
+) -> tuple[o3d.geometry.PointCloud, ReconstructionResult]:
+    """Detect floor plane via RANSAC and rotate the whole scene to Y-up."""
+    if len(pcd.points) < 100:
+        return pcd, result
+
+    try:
+        plane_model, inliers = pcd.segment_plane(
+            distance_threshold=0.05, ransac_n=3, num_iterations=1000
+        )
+    except Exception:
+        return pcd, result
+
+    normal = np.array(plane_model[:3], dtype=np.float64)
+    normal /= np.linalg.norm(normal)
+
+    # Flip normal so it points away from the floor (toward the scene content)
+    pts_arr = np.asarray(pcd.points)
+    all_idx = set(range(len(pts_arr)))
+    non_floor_idx = list(all_idx - set(inliers))
+    if non_floor_idx:
+        non_floor_mean = pts_arr[non_floor_idx].mean(axis=0)
+        floor_mean = pts_arr[inliers].mean(axis=0)
+        if np.dot(normal, non_floor_mean - floor_mean) < 0:
+            normal = -normal
+
+    R_align = _rotation_from_vec_to_vec(normal, np.array([0.0, 1.0, 0.0]))
+
+    # Rotate point cloud in-place
+    pcd.rotate(R_align, center=(0.0, 0.0, 0.0))
+
+    # Rotate world_points tensor
+    S, H, W, _ = result.world_points.shape
+    wp = result.world_points.reshape(-1, 3)
+    result.world_points = (R_align @ wp.T).T.reshape(S, H, W, 3)
+
+    # For w2c transforms: rotating world by R_align means R_new = R_old @ R_align.T
+    # Translation t is unchanged (it's in camera space, not world space)
+    result.extrinsics[:, :3, :3] = result.extrinsics[:, :3, :3] @ R_align.T
+
+    return pcd, result
 
 
 def _build_mesh(pcd: o3d.geometry.PointCloud) -> o3d.geometry.TriangleMesh:
