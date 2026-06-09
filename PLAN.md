@@ -16,7 +16,8 @@ Apply for Perception & Spatial AI internship at Humanoid (London).
 - [ ] Geometry-semantic alignment
 
 ## Hardware Constraint
-MacBook Pro M4 Pro — Apple Silicon MPS only, no CUDA.
+MacBook Pro M4 Pro — Apple Silicon MPS only, no CUDA on local machine.
+Cloud GPU (RunPod / Lambda Labs A100) available for high-fidelity runs.
 
 ## Key Criteria (what judges care about)
 1. Simplicity and usability
@@ -92,7 +93,8 @@ MacBook Pro M4 Pro — Apple Silicon MPS only, no CUDA.
 - End-to-end from phone video to labelled 3D in a single `python run.py video.mp4`
 
 ### Apple Silicon compatibility
-- VGGT-Omega: MPS ✅ (float32, ~5GB model)
+- VGGT-1B: MPS ✅ (float32, ~20 frame limit due to O(n²) attention)
+- VGGT-Omega: CUDA only ❌ MPS — requires cloud GPU
 - Open3D: CPU ✅ (pure Python/C++)
 - SAM2: MPS ✅
 - OpenCLIP: MPS ✅
@@ -134,10 +136,86 @@ humanoid-video-to-3D/
 - [x] Environment setup (environment.yml + install.sh)
 - [x] Stage 1: Frame extraction (pipeline/extract_frames.py)
 - [x] Stage 2: VGGT / VGGT-Omega integration (pipeline/reconstruct.py)
-- [x] Stage 3: Open3D post-processing (pipeline/postprocess.py)
+- [x] Stage 3: Open3D post-processing + ground-plane alignment (pipeline/postprocess.py)
 - [x] Stage 4: Semantic lifting SAM2 + CLIP (pipeline/semantics.py)
-- [x] Stage 5: Rerun visualization (viz/viewer.py)
+- [x] Stage 5: Rerun visualization with named semantic legend (viz/viewer.py)
 - [x] README with design choices
-- [ ] **NEXT: Test on actual video — record a room and run the pipeline**
-- [ ] Add real example outputs to README (screenshots / GIF)
-- [ ] Git init + push to GitHub
+- [x] Public repo pushed to GitHub (ptrckfrnk/humanoid-video-to-3D)
+- [ ] Real example videos shot and run through pipeline
+- [ ] High-fidelity outputs via cloud GPU (VGGT-Omega, 80 frames)
+- [ ] Turntable GIF of each scene → embedded in README
+- [ ] README examples section: 3 scenes, side-by-side input/output layout
+
+---
+
+## Improvement Roadmap
+
+Priority matrix for the pre-submission polish sprint.
+**P1** = must do, directly affects deliverable quality.
+**P2** = high leverage, do after P1.
+**P3** = if time allows, adds impressiveness.
+
+---
+
+### A. Video Capture  *(no code, free, highest ROI)*
+
+| # | Priority | Task | Notes |
+|---|---|---|---|
+| A1 | **P1** | Shoot 3 example scenes using correct technique | See technique guide below |
+| A2 | **P1** | Scene selection: desk/lab bench, bookshelf corner, robot arm or mechanical object | Dense texture + interesting 3D structure |
+| A3 | **P1** | Camera motion: slow orbital arc (~180° over 6–8 sec), not linear walk | Baseline between views is critical for VGGT depth accuracy |
+| A4 | **P1** | Lock focus + exposure before recording; diffuse even lighting, no direct sun/reflections | Motion blur and overexposure break multi-view consistency |
+| A5 | P2 | Replace the existing example video with the best new one | Current example may not showcase the pipeline well |
+
+**Capture technique checklist (for each video):**
+- Lock focus and exposure before starting
+- Move slowly: 6–8 seconds for a 180° arc
+- Keep the subject centered; don't tilt up/down mid-shot
+- Avoid: mirrors, glass surfaces, plain white walls, fast movement
+- Good scenes: desk with objects, shelves, lab equipment, corner of a furnished room
+
+---
+
+### B. Pipeline / Architecture Improvements  *(code changes)*
+
+| # | Priority | Task | Notes |
+|---|---|---|---|
+| B1 | **P1** | Tune `--conf` threshold per scene (try 1.0–2.5) | Default 1.5 may be too aggressive or too loose depending on scene |
+| B2 | P2 | Smarter frame sampling: skip near-duplicate frames using SSIM or optical flow | Uniform sampling wastes budget on near-identical frames |
+| B3 | P2 | Better mesh post-processing: increase Poisson depth 9→11, add density trimming | Removes shrinkwrap artifacts at scene edges |
+| B4 | P2 | Texture projection onto mesh (Open3D `create_from_point_cloud_poisson` + UV map) | Makes mesh outputs look photorealistic, not just geometry |
+| B5 | P3 | Sliding window + ICP alignment for long videos on MPS | Enables 60–100 frame coverage without CUDA; complex but high technical value |
+
+---
+
+### C. Compute / Cloud GPU  *(rent ~$3–5 of GPU time)*
+
+| # | Priority | Task | Notes |
+|---|---|---|---|
+| C1 | **P1** | Set up cloud GPU environment (RunPod or Lambda Labs, A100 or 4090) | One-time setup; ~30 min |
+| C2 | **P1** | Run each of the 3 example videos with `--model vggt-omega --frames 80 --device cuda --mesh` | VGGT-Omega + 80 frames = significantly denser, higher-quality output |
+| C3 | **P1** | Download outputs (.ply, .rrd) locally | These become the example outputs in the README |
+| C4 | P2 | Also run `--semantic` on at least one scene on the GPU | Semantics is faster on CUDA; test on all 3 if budget allows |
+
+---
+
+### D. Presentation  *(what judges actually see first)*
+
+| # | Priority | Task | Notes |
+|---|---|---|---|
+| D1 | **P1** | Turntable GIF for each of the 3 scenes → embed in README | Single highest-impact deliverable for a visual first impression |
+| D2 | **P1** | README examples section: 3 scenes, one image per row (input frame / point cloud / semantic overlay) | Judges want to see what it looks like before they run anything |
+| D3 | **P1** | Check in the .rrd file for at least one scene (or link to GitHub Release asset) | Anyone with `rerun examples/office.rrd` can explore interactively — impressive |
+| D4 | P2 | Add a GIF of the Rerun viewer being navigated (screen recording) | Shows the live interactive experience, not just a static export |
+| D5 | P2 | Add metrics callout in README: point count, inference time, model name, # frames | Concrete numbers signal rigour |
+| D6 | P3 | Short Loom / screen-record of end-to-end run (terminal → Rerun viewer) | Strong for portfolio; optional for submission |
+
+---
+
+### Turntable GIF — how to generate (D1)
+
+When ready to implement, the approach is:
+1. Load `scene.ply` in Open3D visualizer
+2. Loop camera orbit (360°, ~60 steps), save each frame via `vis.capture_screen_image()`
+3. Stitch with `ffmpeg -framerate 20 -i frame_%04d.png -vf "scale=800:-1" turntable.gif`
+4. Or use `python -m open3d.tools.turn_table_maker` if available in the installed version
