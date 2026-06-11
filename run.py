@@ -162,6 +162,7 @@ def main() -> None:
         conf_threshold=args.conf,
         build_mesh=args.mesh,
         output_dir=args.output,
+        console=console,
     )
     timings["postprocess"] = round(time.time() - t0, 2)
     n_pts = len(scene.point_cloud.points)

@@ -142,17 +142,21 @@ humanoid-video-to-3D/
 - [x] README with design choices
 - [x] Public repo pushed to GitHub (ptrckfrnk/humanoid-video-to-3D)
 - [x] Farthest-point sampling for diverse frame selection (pipeline/extract_frames.py)
-- [x] Improved mesh: Poisson depth 10 + density trimming (pipeline/postprocess.py)
 - [x] Turntable GIF auto-generated after every run (viz/turntable.py)
 - [x] Timestamped output dirs — runs never overwrite each other
 - [x] run_info.json: parameters + metrics saved per run
 - [x] README and PLAN.md up to date
+- [x] Mesh pipeline debugged and smoke-tested end-to-end on MPS (depth=6, coarse but functional)
+- [x] Stage 3 progress output: per-step timing + point counts printed to terminal
+- [x] Open3D verbosity silenced (eliminated blank-line spam in rich terminal)
+- [x] Mesh point-cloud downsampling fixed (random_down_sample replaces broken volume formula)
 - [ ] Real example videos shot and run through pipeline
 - [ ] High-fidelity outputs via cloud GPU (VGGT-Omega, 80 frames)
 - [ ] Turntable GIFs embedded in README (need real outputs first)
 - [ ] README examples section: 3 scenes, side-by-side input/output layout
 - [x] Mesh logged in Rerun viewer (world/scene/mesh) — auto-shows colours after B4
 - [ ] B4: Texture projection onto mesh (colours from video frames → mesh vertices)
+- [ ] Fix Poisson depth=7+ segfault on Apple Silicon (Open3D build bug) — needed for GPU run quality
 
 ---
 
@@ -190,9 +194,10 @@ Priority matrix for the pre-submission polish sprint.
 |---|---|---|---|
 | B1 | **P1** | Tune `--conf` threshold per scene (try 1.0–2.5) | Default 1.5 may be too aggressive or too loose depending on scene |
 | ~~B2~~ | ~~P2~~ | ~~Smarter frame sampling: skip near-duplicate frames using SSIM or optical flow~~ | ✅ Done: farthest-point sampling on 64×64 thumbnails, 6× candidate pool |
-| ~~B3~~ | ~~P2~~ | ~~Better mesh post-processing: increase Poisson depth 9→11, add density trimming~~ | ✅ Done: depth→10, density trimming added |
+| ~~B3~~ | ~~P2~~ | ~~Better mesh post-processing~~ | ✅ Done: downsampling fixed, depth=6 smoke-tested on MPS, depth=7+ segfaults (Open3D/ARM bug — fix for GPU run) |
 | B4 | P2 | Texture projection onto mesh (Open3D `create_from_point_cloud_poisson` + UV map) | Makes mesh outputs look photorealistic, not just geometry |
 | B5 | P3 | Sliding window + ICP alignment for long videos on MPS | Enables 60–100 frame coverage without CUDA; complex but high technical value |
+| B6 | **P1** | Fix Poisson segfault at depth≥7 on Apple Silicon | Required for quality mesh on GPU run; likely Open3D version issue — try `pip install open3d==0.17.0` or use `ball_pivoting` as fallback |
 
 ---
 
