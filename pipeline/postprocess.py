@@ -55,7 +55,14 @@ def postprocess(
     # Align scene so the floor is flat and Y points up
     pcd, result = _align_to_gravity(pcd, result)
 
-    mesh = _build_mesh(pcd) if build_mesh else None
+    if build_mesh:
+        try:
+            mesh = _build_mesh(pcd)
+        except Exception as e:
+            print(f"  [postprocess] mesh skipped: {e}")
+            mesh = None
+    else:
+        mesh = None
 
     return SceneResult(point_cloud=pcd, mesh=mesh)
 
@@ -116,18 +123,27 @@ def _align_to_gravity(
     return pcd, result
 
 
-def _build_mesh(pcd: o3d.geometry.PointCloud) -> o3d.geometry.TriangleMesh:
+def _build_mesh(pcd: o3d.geometry.PointCloud) -> o3d.geometry.TriangleMesh | None:
     """Poisson surface reconstruction from a dense oriented point cloud."""
     pcd.estimate_normals(
         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
     )
     pcd.orient_normals_consistent_tangent_plane(k=100)
 
+    # Scale depth to point cloud density — sparse clouds (few frames) need lower depth
+    depth = 10 if len(pcd.points) > 200_000 else 9
+
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        pcd, depth=10
+        pcd, depth=depth
     )
-    # Trim low-density vertices — these are the shrinkwrap artifacts at scene edges
-    mesh.remove_vertices_by_mask(np.asarray(densities) < np.quantile(densities, 0.05))
+
+    densities = np.asarray(densities)
+    if len(densities) > 0 and len(mesh.vertices) > 0:
+        mesh.remove_vertices_by_mask(densities < np.quantile(densities, 0.05))
+
+    if len(mesh.vertices) == 0:
+        return None
+
     mesh = mesh.filter_smooth_simple(number_of_iterations=3)
     mesh.compute_vertex_normals()
     return mesh
