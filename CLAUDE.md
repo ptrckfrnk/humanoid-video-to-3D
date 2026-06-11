@@ -1,12 +1,13 @@
 # CLAUDE.md — Project Context
 
-This file is read automatically by Claude Code at the start of every session.
+*Loaded automatically by Claude Code at the start of every session.*
+*Sprint status and backlog → [PLAN.md](PLAN.md) · Public documentation → [README.md](README.md)*
 
 ---
 
 ## What this project is
 
-A job application for a **Perception & Spatial AI internship at Humanoid (London)** — a robotics company Patrick really wants to work at. This is not a homework exercise. Every decision should be made with submission quality in mind.
+A job application for the **Perception & Spatial AI internship at Humanoid (London)** — a robotics company Patrick really wants to work at. This is not a homework exercise. Every decision should be made with submission quality in mind.
 
 ---
 
@@ -28,58 +29,58 @@ A job application for a **Perception & Spatial AI internship at Humanoid (London
 >
 > There are no constraints on real-time performance. We're intentionally leaving the approach open — use any tools, models, frameworks, or agentic workflows you find effective.
 >
-> **What to submit:**
-> - A working codebase
-> - Clear instructions on how to run your system
-> - Example input(s) and output(s)
-> - (Optional) A short note explaining your design choices and tradeoffs
+> **What to submit:** working codebase · run instructions · example inputs/outputs · (optional) design note
 >
 > **What we care about:**
-> - Simplicity and usability of your solution
-> - **Creativity in approach**
-> - Quality of 3D scene reconstruction
-> - Clear, compelling presentation of results
-> - Coherence between geometry and semantics
+> 1. Simplicity and usability
+> 2. **Creativity in approach**
+> 3. Quality of 3D reconstruction
+> 4. Clear, compelling presentation of results
+> 5. Coherence between geometry and semantics
 >
-> *Make something you're proud of.*
+> *"We're not looking for standard solutions, we're looking for how you think. The strongest submissions are creative, original, and push beyond the obvious."*
 
 ---
 
-## What the judges are looking for
+## Why the current approach is creative
 
-- **"We're not looking for standard solutions, we're looking for how you think."**
-- **"The strongest submissions are creative, original, and push beyond the obvious."**
+A vanilla COLMAP pipeline would score low. Our approach is deliberately cutting-edge:
 
-This means: a vanilla COLMAP pipeline would score low. The current approach (VGGT-Omega, a CVPR 2026 Oral paper, with SAM2+CLIP semantic lifting) is deliberately cutting-edge and non-standard.
+- **VGGT-Omega** (CVPR 2026 Oral, ~3 weeks old at submission): single forward pass — no feature matching, no bundle adjustment, no iterative optimisation
+- **SAM2.1 + OpenCLIP semantic lifting**: open-vocabulary 3D labels with no training required
+- End-to-end: `python run.py video.mp4` → coloured point cloud + mesh + semantic labels + Rerun viewer
 
----
-
-## Current approach (why it's creative)
-
-- **VGGT-1B / VGGT-Omega** (CVPR 2025 Best Paper / CVPR 2026 Oral): single forward pass, no COLMAP, no iterative optimisation
-- **SAM2.1 + OpenCLIP semantic lifting**: open-vocabulary 3D labels without any training
-- **End-to-end**: `python run.py video.mp4` → coloured point cloud + optional mesh + semantic labels + Rerun viewer
-- VGGT-Omega is ~3 weeks old as of submission — no other published pipeline wraps it like this
+Full design rationale in README § Design choices.
 
 ---
 
-## Hardware
+## Hardware and model compatibility
 
-- **Development**: MacBook Pro M4 Pro (MPS only, no CUDA)
-- **Final quality run**: Cloud GPU (RunPod / Lambda Labs A100 or 4090) — not yet done
+| Hardware | Model | Frames | Notes |
+|---|---|---|---|
+| NVIDIA A100 / 4090 | VGGT-Omega (CVPR 2026) | 80–100 | Final quality run target |
+| MacBook M4 Pro (MPS) | VGGT-1B (CVPR 2025) | ≤20 | O(n²) global attention limits frame count |
+| CPU only | VGGT-1B | ≤20 | Slow but functional |
+
+**MPS-specific constraints:**
+- VGGT-1B: ✅ float32 only, ~20 frame limit
+- SAM2: ✅ MPS
+- OpenCLIP: ✅ MPS
+- Open3D (Poisson mesh): ✅ depth=6 · ❌ depth≥7 segfaults (ARM build bug — see B6 in PLAN.md)
+- VGGT-Omega: ❌ CUDA only — requires cloud GPU
 
 ---
 
-## Key constraints and known issues
+## Known open issues
 
-- MPS: max ~20 frames due to O(n²) global attention in VGGT
-- Poisson mesh: depth=6 works on MPS; depth≥7 segfaults (Open3D ARM bug, see B6 in PLAN.md)
-- GPU run needed for: VGGT-Omega model, 80 frames, depth=9 mesh, final example outputs
+- **B6**: Poisson segfaults at depth≥7 on Apple Silicon — must fix before GPU run. Try `open3d==0.17.0` or fall back to `ball_pivoting`.
+- **No real example outputs yet** — the GPU run (C1–C3 in PLAN.md) is the next critical step.
+- **`room.mov`** is a quick smoke-test video only; not suitable for README examples.
 
 ---
 
-## Before suggesting any change, ask:
+## Decision checklist — before suggesting any change
 
 1. Does this make the submission *more impressive* to a robotics company hiring for Perception & Spatial AI?
 2. Does it improve quality, usability, or the README presentation?
-3. Is it worth the time cost vs. shooting real videos and running on GPU (which has the highest ROI)?
+3. Is it worth the time cost relative to shooting real videos + running on GPU (highest ROI right now)?
