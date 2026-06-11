@@ -30,7 +30,12 @@ def render_turntable(
     height: int = 600,
 ) -> bool:
     """Render a turntable GIF. Returns True on success, False if ffmpeg missing."""
+    # Probe file type silently — Open3D warns when a PLY has no triangles
+    prev_level = o3d.utility.get_verbosity_level()
+    o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
     geom = o3d.io.read_triangle_mesh(str(ply_path))
+    o3d.utility.set_verbosity_level(prev_level)
+
     is_mesh = len(geom.triangles) > 0
     if not is_mesh:
         geom = o3d.io.read_point_cloud(str(ply_path))
