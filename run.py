@@ -62,6 +62,8 @@ def parse_args() -> argparse.Namespace:
                    help="Generate a Poisson surface mesh from the point cloud")
     p.add_argument("--no-viewer", action="store_true",
                    help="Skip Rerun viewer (just save .ply files)")
+    p.add_argument("--no-turntable", action="store_true",
+                   help="Skip turntable GIF generation")
     p.add_argument("--image-size", type=int, default=518,
                    help="Resolution passed to VGGT preprocessing")
     return p.parse_args()
@@ -182,6 +184,28 @@ def main() -> None:
         o3d.io.write_triangle_mesh(str(mesh_path), scene.mesh)
         console.print(f"  [green]✓[/green] Surface mesh    → {mesh_path}")
 
+    # ── Turntable GIF ─────────────────────────────────────────────────────────
+    gif_path = args.output / "turntable.gif"
+    if not args.no_turntable:
+        console.print()
+        console.print("[bold]Rendering turntable GIF…[/bold]")
+        console.print("  [dim](skip with --no-turntable)[/dim]")
+        try:
+            from viz.turntable import render_turntable
+            # Use semantic cloud if available — richer colours; else geometry cloud
+            source_ply = (args.output / "scene_semantic.ply") if semantic is not None \
+                         else ply_path
+            ok = render_turntable(source_ply, gif_path)
+            if ok:
+                console.print(f"  [green]✓[/green] Turntable GIF   → {gif_path}")
+            else:
+                console.print(
+                    "  [yellow]⚠  ffmpeg not found[/yellow] — "
+                    "install with: conda install -c conda-forge ffmpeg"
+                )
+        except Exception as e:
+            console.print(f"  [yellow]⚠  Turntable skipped:[/yellow] {e}")
+
     # ── Visualize ─────────────────────────────────────────────────────────────
     if not args.no_viewer:
         console.print()
@@ -202,6 +226,8 @@ def main() -> None:
     console.rule("[bold green]Done[/bold green]")
     console.print(f"  All outputs in [green]{args.output}/[/green]")
     console.print(f"  View in MeshLab: [dim]open {ply_path}[/dim]")
+    if gif_path.exists():
+        console.print(f"  Turntable GIF:  [dim]open {gif_path}[/dim]")
     if (args.output / "demo.rrd").exists():
         console.print(f"  Reopen viewer:  [dim]rerun {args.output}/demo.rrd[/dim]")
     console.print()
