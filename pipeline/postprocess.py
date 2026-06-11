@@ -10,11 +10,27 @@ Steps:
 """
 
 from __future__ import annotations
+import contextlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import open3d as o3d
+
+
+@contextlib.contextmanager
+def _silence_stderr():
+    """Redirect stderr at the file-descriptor level to suppress C library noise."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    saved   = os.dup(2)
+    os.dup2(devnull, 2)
+    try:
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull)
+        os.close(saved)
 
 from pipeline.reconstruct import ReconstructionResult
 
@@ -141,9 +157,10 @@ def _build_mesh(pcd: o3d.geometry.PointCloud) -> o3d.geometry.TriangleMesh | Non
     else:
         depth = 8
 
-    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        pcd, depth=depth
-    )
+    with _silence_stderr():
+        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+            pcd, depth=depth
+        )
 
     densities = np.asarray(densities)
     if len(densities) > 0 and len(mesh.vertices) > 0:
