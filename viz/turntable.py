@@ -1,6 +1,10 @@
 """
 Turntable GIF renderer — orbits a camera around a .ply scene and stitches
 the frames into a palette-optimised GIF via ffmpeg.
+
+Rendering strategy:
+  - Linux / headless: OffscreenRenderer (EGL, no display needed)
+  - macOS:            Visualizer with capture_screen_image (window appears briefly)
 """
 
 from __future__ import annotations
@@ -12,6 +16,9 @@ from pathlib import Path
 
 import numpy as np
 import open3d as o3d
+
+# Open3D ViewControl rotates by this many radians per "pixel" unit
+_RAD_PER_PIXEL = 0.003
 
 
 def render_turntable(
@@ -31,11 +38,30 @@ def render_turntable(
             print(f"  [turntable] could not load {ply_path}", file=sys.stderr)
             return False
 
+    frames_dir = Path(tempfile.mkdtemp())
+
+    # Try headless first (Linux/cloud GPU); fall back to windowed (macOS)
+    try:
+        _render_offscreen(geom, is_mesh, frames_dir, n_frames, width, height)
+    except Exception as e:
+        if any(k in str(e) for k in ("EGL", "Headless", "headless")):
+            _render_windowed(geom, is_mesh, frames_dir, n_frames, width, height)
+        else:
+            raise
+
+    return _stitch_gif(frames_dir, output_path, fps, width)
+
+
+# ── Offscreen renderer (Linux / headless) ────────────────────────────────────
+
+def _render_offscreen(
+    geom, is_mesh: bool, frames_dir: Path, n_frames: int, width: int, height: int
+) -> None:
     bbox   = geom.get_axis_aligned_bounding_box()
     center = np.asarray(bbox.get_center())
     extent = np.asarray(bbox.get_extent())
-    orbit_radius = float(np.linalg.norm(extent[[0, 2]])) * 0.9
-    cam_y = float(center[1] + extent[1] * 0.35)
+    radius = float(np.linalg.norm(extent[[0, 2]])) * 0.9
+    cam_y  = float(center[1] + extent[1] * 0.35)
 
     renderer = o3d.visualization.rendering.OffscreenRenderer(width, height)
     renderer.scene.set_background(np.array([0.12, 0.12, 0.12, 1.0]))
@@ -49,21 +75,62 @@ def render_turntable(
     renderer.scene.scene.enable_sun_light(True)
     renderer.scene.scene.enable_indirect_light(True)
 
-    frames_dir = Path(tempfile.mkdtemp())
-
     for i in range(n_frames):
         angle = 2 * math.pi * i / n_frames
         eye = [
-            float(center[0]) + orbit_radius * math.sin(angle),
+            float(center[0]) + radius * math.sin(angle),
             cam_y,
-            float(center[2]) + orbit_radius * math.cos(angle),
+            float(center[2]) + radius * math.cos(angle),
         ]
         renderer.setup_camera(60.0, center.tolist(), eye, [0.0, 1.0, 0.0])
-        img = renderer.render_to_image()
-        o3d.io.write_image(str(frames_dir / f"frame_{i:04d}.png"), img)
+        o3d.io.write_image(
+            str(frames_dir / f"frame_{i:04d}.png"),
+            renderer.render_to_image(),
+        )
 
-    return _stitch_gif(frames_dir, output_path, fps, width)
 
+# ── Windowed renderer (macOS) ─────────────────────────────────────────────────
+
+def _render_windowed(
+    geom, is_mesh: bool, frames_dir: Path, n_frames: int, width: int, height: int
+) -> None:
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(visible=True, width=width, height=height)
+    vis.add_geometry(geom)
+
+    opt = vis.get_render_option()
+    opt.background_color = np.array([0.12, 0.12, 0.12])
+    if is_mesh:
+        opt.mesh_show_back_face = True
+    else:
+        opt.point_size = 2.0
+
+    vis.reset_view_point(True)
+    ctr = vis.get_view_control()
+
+    # Let the initial frame settle before capturing
+    for _ in range(10):
+        vis.poll_events()
+        vis.update_renderer()
+
+    # Tilt slightly downward for a better angle on room-scale scenes
+    ctr.rotate(0, -150)
+
+    # Exact 360° orbit: 2π rad / _RAD_PER_PIXEL total units, split across frames
+    step = (2 * math.pi / _RAD_PER_PIXEL) / n_frames
+
+    for i in range(n_frames):
+        ctr.rotate(step, 0)
+        vis.poll_events()
+        vis.update_renderer()
+        vis.capture_screen_image(
+            str(frames_dir / f"frame_{i:04d}.png"), do_render=True
+        )
+
+    vis.destroy_window()
+
+
+# ── GIF stitching ─────────────────────────────────────────────────────────────
 
 def _stitch_gif(frames_dir: Path, output_path: Path, fps: int, width: int) -> bool:
     pattern = str(frames_dir / "frame_%04d.png")
