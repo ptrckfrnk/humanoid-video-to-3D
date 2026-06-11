@@ -181,7 +181,7 @@ Priority matrix for the pre-submission polish sprint.
 | # | Priority | Task | Notes |
 |---|---|---|---|
 | B1 | **P1** | Tune `--conf` threshold per scene (try 1.0–2.5) | Default 1.5 may be too aggressive or too loose depending on scene |
-| B2 | P2 | Smarter frame sampling: skip near-duplicate frames using SSIM or optical flow | Uniform sampling wastes budget on near-identical frames |
+| ~~B2~~ | ~~P2~~ | ~~Smarter frame sampling: skip near-duplicate frames using SSIM or optical flow~~ | ✅ Done: farthest-point sampling on 64×64 thumbnails, 6× candidate pool |
 | ~~B3~~ | ~~P2~~ | ~~Better mesh post-processing: increase Poisson depth 9→11, add density trimming~~ | ✅ Done: depth→10, density trimming added |
 | B4 | P2 | Texture projection onto mesh (Open3D `create_from_point_cloud_poisson` + UV map) | Makes mesh outputs look photorealistic, not just geometry |
 | B5 | P3 | Sliding window + ICP alignment for long videos on MPS | Enables 60–100 frame coverage without CUDA; complex but high technical value |
