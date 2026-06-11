@@ -125,13 +125,21 @@ def _align_to_gravity(
 
 def _build_mesh(pcd: o3d.geometry.PointCloud) -> o3d.geometry.TriangleMesh | None:
     """Poisson surface reconstruction from a dense oriented point cloud."""
+    n = len(pcd.points)
+
     pcd.estimate_normals(
         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
     )
-    pcd.orient_normals_consistent_tangent_plane(k=100)
+    # k=20 is enough for consistent orientation and avoids hangs on noisy clouds
+    pcd.orient_normals_consistent_tangent_plane(k=20)
 
-    # Scale depth to point cloud density — sparse clouds (few frames) need lower depth
-    depth = 10 if len(pcd.points) > 200_000 else 9
+    # Conservative depth scaling — deep Poisson is unstable on sparse clouds
+    if n > 400_000:
+        depth = 10
+    elif n > 150_000:
+        depth = 9
+    else:
+        depth = 8
 
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
         pcd, depth=depth

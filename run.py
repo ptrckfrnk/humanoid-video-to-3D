@@ -144,6 +144,12 @@ def main() -> None:
     timings["reconstruct"] = round(time.time() - t0, 2)
     console.print(f"           → done  ({timings['reconstruct']:.1f}s)")
 
+    if args.mesh and len(frame_paths) < 15:
+        console.print(
+            f"[yellow]Note:[/yellow] --mesh works best with 15+ frames "
+            f"(current: {len(frame_paths)}). Surface may be incomplete."
+        )
+
     # ── Stage 3: Post-process ─────────────────────────────────────────────────
     console.print("[bold]Stage 3 / 4[/bold]  Building point cloud...")
     t0 = time.time()
