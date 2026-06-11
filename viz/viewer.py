@@ -80,6 +80,21 @@ def launch_viewer(
     cols = (np.asarray(scene.point_cloud.colors) * 255).astype(np.uint8)
     rr.log("world/scene/geometry", rr.Points3D(positions=pts, colors=cols, radii=0.003))
 
+    # ── Mesh ─────────────────────────────────────────────────────────────────
+    if scene.mesh is not None:
+        vertices  = np.asarray(scene.mesh.vertices,  dtype=np.float32)
+        triangles = np.asarray(scene.mesh.triangles, dtype=np.uint32)
+        normals   = np.asarray(scene.mesh.vertex_normals, dtype=np.float32) \
+                    if scene.mesh.has_vertex_normals() else None
+        v_colors  = (np.asarray(scene.mesh.vertex_colors) * 255).astype(np.uint8) \
+                    if scene.mesh.has_vertex_colors() else None
+        rr.log("world/scene/mesh", rr.Mesh3D(
+            vertex_positions=vertices,
+            triangle_indices=triangles,
+            vertex_normals=normals,
+            vertex_colors=v_colors,
+        ))
+
     # ── Semantic cloud ────────────────────────────────────────────────────────
     if semantic is not None:
         from pipeline.semantics import LABEL_COLORS, _label_color
