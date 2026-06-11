@@ -6,7 +6,15 @@ For each video frame:
   2. Each mask crop is encoded by OpenCLIP image encoder
   3. Pre-encoded text embeddings for candidate labels are compared via cosine similarity
   4. Best-matching label assigned to every pixel in that mask
-  5. Labels propagated into 3D by projecting world points back into each frame
+
+2D → 3D lifting (multi-view fusion, see _fuse_labels):
+  5. Every 3D point is projected into every frame; a frame only gets a say if
+     the point passes a z-buffer occlusion test against that frame's depth map
+     (otherwise occluded points would inherit the label of whatever surface
+     is in front of them)
+  6. Each visible, labeled observation casts one vote; the per-point label is
+     the majority across all views — a single bad mask in one frame can no
+     longer poison a point
 
 Gracefully degrades — if SAM2 or OpenCLIP are missing it raises ImportError
 and run.py catches it.
@@ -76,11 +84,13 @@ def label_scene(
 
     # ── Load OpenCLIP ─────────────────────────────────────────────────────────
     console.print("  Loading OpenCLIP ViT-B/32...")
+    # "-quickgelu" matches the activation the OpenAI weights were trained with;
+    # the plain ViT-B-32 config uses standard GELU and degrades the embeddings.
     clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-        "ViT-B-32", pretrained="openai"
+        "ViT-B-32-quickgelu", pretrained="openai"
     )
     clip_model = clip_model.to(device).eval()
-    tokenizer  = open_clip.get_tokenizer("ViT-B-32")
+    tokenizer  = open_clip.get_tokenizer("ViT-B-32-quickgelu")
 
     with torch.inference_mode():
         text_tokens   = tokenizer([f"a photo of a {l}" for l in labels]).to(device)
@@ -99,41 +109,35 @@ def label_scene(
         )
         label_maps.append(lmap)
 
-    # ── Propagate 2D labels → 3D points ──────────────────────────────────────
-    H, W    = result.images.shape[1:3]
+    # ── Propagate 2D labels → 3D points (multi-view fusion) ──────────────────
     pts_all = np.asarray(scene.point_cloud.points)   # (N, 3)
-    N       = len(pts_all)
-    point_labels = [-1] * N    # -1 until a frame assigns a label
 
-    for s in range(S):
-        uvs, depths = _project_points(
-            pts_all, result.extrinsics[s], result.intrinsics[s]
-        )
-        in_frame = (
-            (depths > 0.05) &
-            (uvs[:, 0] >= 0) & (uvs[:, 0] < W) &
-            (uvs[:, 1] >= 0) & (uvs[:, 1] < H)
-        )
-        if not in_frame.any():
-            continue
+    best, n_votes = _fuse_labels(
+        pts_all, label_maps,
+        result.extrinsics, result.intrinsics, result.depth,
+        n_labels=len(labels),
+    )
+    point_labels = np.where(n_votes > 0, best, -1)   # (N,) int; -1 = never observed
 
-        us = uvs[in_frame, 0].astype(int).clip(0, W - 1)
-        vs = uvs[in_frame, 1].astype(int).clip(0, H - 1)
-        frame_label_idxs = label_maps[s][vs, us]
-
-        idxs = np.where(in_frame)[0]
-        for pt_i, lbl_idx in zip(idxs, frame_label_idxs):
-            if lbl_idx >= 0 and point_labels[pt_i] == -1:
-                point_labels[pt_i] = lbl_idx
+    n_labeled = int((point_labels >= 0).sum())
+    console.print(
+        f"  Multi-view fusion: {n_labeled:,}/{len(pts_all):,} points labeled "
+        f"({100 * n_labeled / max(len(pts_all), 1):.0f}%), "
+        f"avg {n_votes[n_votes > 0].mean():.1f} views/point"
+        if n_labeled else
+        "  [yellow]Multi-view fusion: no points received a label[/yellow]"
+    )
 
     # Map index → label string; -1 → "other"
     str_labels = [labels[i] if i >= 0 else "other" for i in point_labels]
 
-    # Build color-coded point cloud
-    sem_colors = np.array([
-        LABEL_COLORS.get(l, _label_color(l)) / 255.0
-        for l in str_labels
-    ], dtype=np.float64)
+    # Build color-coded point cloud (LUT row len(labels) = "other" fallback)
+    color_lut = np.array(
+        [LABEL_COLORS.get(l, _label_color(l)) for l in labels]
+        + [LABEL_COLORS.get("other", _label_color("other"))],
+        dtype=np.float64,
+    ) / 255.0
+    sem_colors = color_lut[np.where(point_labels >= 0, point_labels, len(labels))]
 
     sem_cloud = o3d.geometry.PointCloud()
     sem_cloud.points = o3d.utility.Vector3dVector(pts_all)
@@ -189,6 +193,58 @@ def _label_frame(
         label_map[seg] = lbl_idx
 
     return label_map
+
+
+def _fuse_labels(
+    pts_world:     np.ndarray,        # (N, 3)
+    label_maps:    List[np.ndarray],  # S × (H, W) int32; -1 = unlabeled
+    extrinsics:    np.ndarray,        # (S, 3, 4) cam-from-world
+    intrinsics:    np.ndarray,        # (S, 3, 3)
+    depth_maps:    np.ndarray,        # (S, H, W) metric depth
+    n_labels:      int,
+    occlusion_tol: float = 0.05,      # relative depth tolerance for visibility
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Fuse per-frame 2D label maps into per-point 3D labels by majority vote.
+
+    A frame votes for a point only if the point projects inside the image AND
+    its camera-space depth matches the frame's depth map at that pixel within
+    `occlusion_tol` (relative) — i.e. the point is actually visible in that
+    frame, not hidden behind a nearer surface.
+
+    Returns:
+        best:    (N,) int64 — winning label index per point (argmax of votes;
+                 meaningless where n_votes == 0)
+        n_votes: (N,) int64 — number of frames that cast a vote for the point
+    """
+    N = len(pts_world)
+    S, H, W = depth_maps.shape
+
+    votes = np.zeros((N, n_labels), dtype=np.uint16)
+
+    for s in range(S):
+        uvs, z = _project_points(pts_world, extrinsics[s], intrinsics[s])
+        us = np.round(uvs[:, 0]).astype(np.int64)
+        vs = np.round(uvs[:, 1]).astype(np.int64)
+
+        in_frame = (z > 0.05) & (us >= 0) & (us < W) & (vs >= 0) & (vs < H)
+        if not in_frame.any():
+            continue
+        idx = np.flatnonzero(in_frame)
+        us, vs, zs = us[idx], vs[idx], z[idx]
+
+        # Z-buffer occlusion test against this frame's depth map
+        d_map   = depth_maps[s][vs, us]
+        visible = (d_map > 0) & (np.abs(zs - d_map) <= occlusion_tol * d_map)
+        if not visible.any():
+            continue
+        idx, us, vs = idx[visible], us[visible], vs[visible]
+
+        lbl     = label_maps[s][vs, us]
+        labeled = lbl >= 0
+        np.add.at(votes, (idx[labeled], lbl[labeled]), 1)
+
+    return votes.argmax(axis=1), votes.sum(axis=1, dtype=np.int64)
 
 
 def _project_points(
