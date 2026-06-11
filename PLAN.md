@@ -182,7 +182,7 @@ Priority matrix for the pre-submission polish sprint.
 |---|---|---|---|
 | B1 | **P1** | Tune `--conf` threshold per scene (try 1.0–2.5) | Default 1.5 may be too aggressive or too loose depending on scene |
 | B2 | P2 | Smarter frame sampling: skip near-duplicate frames using SSIM or optical flow | Uniform sampling wastes budget on near-identical frames |
-| B3 | P2 | Better mesh post-processing: increase Poisson depth 9→11, add density trimming | Removes shrinkwrap artifacts at scene edges |
+| ~~B3~~ | ~~P2~~ | ~~Better mesh post-processing: increase Poisson depth 9→11, add density trimming~~ | ✅ Done: depth→10, density trimming added |
 | B4 | P2 | Texture projection onto mesh (Open3D `create_from_point_cloud_poisson` + UV map) | Makes mesh outputs look photorealistic, not just geometry |
 | B5 | P3 | Sliding window + ICP alignment for long videos on MPS | Enables 60–100 frame coverage without CUDA; complex but high technical value |
 
@@ -203,7 +203,7 @@ Priority matrix for the pre-submission polish sprint.
 
 | # | Priority | Task | Notes |
 |---|---|---|---|
-| D1 | **P1** | Turntable GIF for each of the 3 scenes → embed in README | Single highest-impact deliverable for a visual first impression |
+| ~~D1~~ | ~~**P1**~~ | ~~Turntable GIF for each of the 3 scenes → embed in README~~ | ✅ Done: auto-generated after every run.py call (viz/turntable.py, --no-turntable to skip) |
 | D2 | **P1** | README examples section: 3 scenes, one image per row (input frame / point cloud / semantic overlay) | Judges want to see what it looks like before they run anything |
 | D3 | **P1** | Check in the .rrd file for at least one scene (or link to GitHub Release asset) | Anyone with `rerun examples/office.rrd` can explore interactively — impressive |
 | D4 | P2 | Add a GIF of the Rerun viewer being navigated (screen recording) | Shows the live interactive experience, not just a static export |
@@ -212,10 +212,7 @@ Priority matrix for the pre-submission polish sprint.
 
 ---
 
-### Turntable GIF — how to generate (D1)
+### Turntable GIF — how to use (D1 ✅)
 
-When ready to implement, the approach is:
-1. Load `scene.ply` in Open3D visualizer
-2. Loop camera orbit (360°, ~60 steps), save each frame via `vis.capture_screen_image()`
-3. Stitch with `ffmpeg -framerate 20 -i frame_%04d.png -vf "scale=800:-1" turntable.gif`
-4. Or use `python -m open3d.tools.turn_table_maker` if available in the installed version
+Auto-generated after every `python run.py video.mp4` call → `outputs/turntable.gif`.
+Skip with `--no-turntable`. Run standalone: `python scripts/turntable.py outputs/scene.ply outputs/turntable.gif`
