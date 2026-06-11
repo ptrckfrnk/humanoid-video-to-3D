@@ -21,13 +21,19 @@ Force CUDA on a Linux workstation:
 
 Skip the interactive viewer (just save files):
     python run.py examples/room.mp4 --no-viewer
+
+Each run saves to its own timestamped directory (outputs/<video>_<timestamp>/)
+so results are never overwritten. Compare runs with scripts/compare_runs.py.
 """
 
 import argparse
+import datetime
+import json
 import sys
 import time
 from pathlib import Path
 
+import numpy as np
 from rich.console import Console
 
 console = Console()
@@ -40,8 +46,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("video", type=Path,
                    help="Path to input video (MP4, MOV, AVI, …)")
-    p.add_argument("--output", "-o", type=Path, default=Path("outputs"),
-                   help="Directory for all output files")
+    p.add_argument("--output", "-o", type=Path, default=None,
+                   help="Output directory (default: outputs/<video>_<timestamp>)")
     p.add_argument("--frames", "-n", type=int, default=50,
                    help="Number of frames to sample (50 is safe for M4 Pro; "
                         "use 80-100 on CUDA for denser clouds)")
@@ -71,6 +77,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    t_run_start = time.time()
 
     from utils.device import get_device, get_dtype
     from pipeline.extract_frames import extract_frames
@@ -86,27 +93,36 @@ def main() -> None:
         console.print("[dim]Note: defaulting to 20 frames on MPS to fit in memory. "
                       "Use --frames N to override.[/dim]")
 
+    if not args.video.exists():
+        console.print(f"[red]Error:[/red] Video not found: {args.video}")
+        sys.exit(1)
+
+    # Each run gets its own directory — never overwrites previous results
+    if args.output is None:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output = Path("outputs") / f"{args.video.stem}_{ts}"
+
     console.rule("[bold cyan]Video → 3D Scene Reconstruction[/bold cyan]")
     console.print(f"  Video   : [green]{args.video}[/green]")
+    console.print(f"  Output  : [green]{args.output}[/green]")
     console.print(f"  Device  : [yellow]{device}[/yellow]  (dtype={dtype})")
     console.print(f"  Frames  : {args.frames}")
     console.print(f"  Model   : {args.model}")
     console.print(f"  Semantic: {'yes' if args.semantic else 'no'}")
     console.print()
 
-    if not args.video.exists():
-        console.print(f"[red]Error:[/red] Video not found: {args.video}")
-        sys.exit(1)
-
     args.output.mkdir(parents=True, exist_ok=True)
     frames_dir = args.output / "frames"
     frames_dir.mkdir(exist_ok=True)
+
+    timings: dict[str, float] = {}
 
     # ── Stage 1: Extract frames ───────────────────────────────────────────────
     console.print("[bold]Stage 1 / 4[/bold]  Extracting frames...")
     t0 = time.time()
     frame_paths = extract_frames(args.video, args.frames, frames_dir)
-    console.print(f"           → {len(frame_paths)} frames  ({time.time()-t0:.1f}s)")
+    timings["extract_frames"] = round(time.time() - t0, 2)
+    console.print(f"           → {len(frame_paths)} frames  ({timings['extract_frames']:.1f}s)")
 
     # ── Stage 2: 3D Reconstruction ────────────────────────────────────────────
     console.print("[bold]Stage 2 / 4[/bold]  Running 3D reconstruction...")
@@ -125,7 +141,8 @@ def main() -> None:
             console.print("  Try reducing: --frames 15")
             sys.exit(1)
         raise
-    console.print(f"           → done  ({time.time()-t0:.1f}s)")
+    timings["reconstruct"] = round(time.time() - t0, 2)
+    console.print(f"           → done  ({timings['reconstruct']:.1f}s)")
 
     # ── Stage 3: Post-process ─────────────────────────────────────────────────
     console.print("[bold]Stage 3 / 4[/bold]  Building point cloud...")
@@ -136,8 +153,9 @@ def main() -> None:
         build_mesh=args.mesh,
         output_dir=args.output,
     )
+    timings["postprocess"] = round(time.time() - t0, 2)
     n_pts = len(scene.point_cloud.points)
-    console.print(f"           → {n_pts:,} points  ({time.time()-t0:.1f}s)")
+    console.print(f"           → {n_pts:,} points  ({timings['postprocess']:.1f}s)")
 
     # ── Stage 4: Semantics ────────────────────────────────────────────────────
     semantic = None
@@ -152,7 +170,8 @@ def main() -> None:
             )
             semantic = label_scene(result, scene, label_list, device)
             unique_labels = sorted(set(semantic.labels))
-            console.print(f"           → {len(unique_labels)} classes  ({time.time()-t0:.1f}s)")
+            timings["semantics"] = round(time.time() - t0, 2)
+            console.print(f"           → {len(unique_labels)} classes  ({timings['semantics']:.1f}s)")
             from pipeline.semantics import LABEL_COLORS, _label_color
             console.print("  [bold]Class legend:[/bold]")
             for lbl in unique_labels:
@@ -184,6 +203,11 @@ def main() -> None:
         o3d.io.write_triangle_mesh(str(mesh_path), scene.mesh)
         console.print(f"  [green]✓[/green] Surface mesh    → {mesh_path}")
 
+    # ── Save run metadata ─────────────────────────────────────────────────────
+    timings["total"] = round(time.time() - t_run_start, 2)
+    _save_run_info(args, device, len(frame_paths), scene, semantic, timings)
+    console.print(f"  [green]✓[/green] Run metadata    → {args.output / 'run_info.json'}")
+
     # ── Turntable GIF ─────────────────────────────────────────────────────────
     gif_path = args.output / "turntable.gif"
     if not args.no_turntable:
@@ -192,7 +216,6 @@ def main() -> None:
         console.print("  [dim](skip with --no-turntable)[/dim]")
         try:
             from viz.turntable import render_turntable
-            # Use semantic cloud if available — richer colours; else geometry cloud
             source_ply = (args.output / "scene_semantic.ply") if semantic is not None \
                          else ply_path
             ok = render_turntable(source_ply, gif_path)
@@ -231,6 +254,57 @@ def main() -> None:
     if (args.output / "demo.rrd").exists():
         console.print(f"  Reopen viewer:  [dim]rerun {args.output}/demo.rrd[/dim]")
     console.print()
+
+
+# ── Run metadata ──────────────────────────────────────────────────────────────
+
+def _save_run_info(
+    args,
+    device,
+    n_frames_extracted: int,
+    scene,
+    semantic,
+    timings: dict,
+) -> None:
+    import open3d as o3d
+
+    pts   = np.asarray(scene.point_cloud.points)
+    bbox  = scene.point_cloud.get_axis_aligned_bounding_box()
+    vol   = float(np.prod(np.asarray(bbox.get_extent())))
+
+    # Average nearest-neighbour distance — proxy for point density.
+    # Sample 2000 points so it stays fast on large clouds.
+    sample_n   = min(len(pts), 2000)
+    sample_idx = np.random.choice(len(pts), sample_n, replace=False)
+    sample_pcd = o3d.geometry.PointCloud()
+    sample_pcd.points = o3d.utility.Vector3dVector(pts[sample_idx])
+    avg_nn = float(np.mean(sample_pcd.compute_nearest_neighbor_distance()))
+
+    info = {
+        "video":     str(args.video),
+        "run_dir":   str(args.output),
+        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "parameters": {
+            "model":              args.model,
+            "device":             str(device),
+            "n_frames_requested": args.frames,
+            "n_frames_extracted": n_frames_extracted,
+            "conf_threshold":     args.conf,
+            "image_size":         args.image_size,
+            "semantic":           args.semantic,
+            "mesh":               args.mesh,
+        },
+        "results": {
+            "n_points":           len(pts),
+            "bbox_volume_m3":     round(vol, 4),
+            "avg_nn_dist_m":      round(avg_nn, 6),
+            "n_semantic_classes": len(set(semantic.labels)) if semantic else None,
+        },
+        "timings_s": timings,
+    }
+
+    with open(args.output / "run_info.json", "w") as f:
+        json.dump(info, f, indent=2)
 
 
 if __name__ == "__main__":
