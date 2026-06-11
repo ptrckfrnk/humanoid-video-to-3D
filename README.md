@@ -105,7 +105,8 @@ python run.py path/to/video.mp4 --no-viewer
 | `--conf` | `1.5` | Confidence threshold — higher = cleaner but sparser |
 | `--semantic` | off | Enable SAM2 + CLIP semantic labeling |
 | `--labels` | 20 indoor classes | Custom comma-separated label list |
-| `--mesh` | off | Run Poisson surface reconstruction |
+| `--mesh` | off | Generate a coloured surface mesh |
+| `--mesh-method` | `tsdf` | `tsdf`: volumetric fusion of the depth maps (robust, coloured) · `poisson`: surface fit on the merged cloud |
 | `--no-viewer` | off | Skip Rerun, just save `.ply` files |
 | `--no-turntable` | off | Skip turntable GIF generation |
 
@@ -177,6 +178,10 @@ Rather than training a dedicated semantic model, we use two powerful off-the-she
 Labels are assigned per-segment in 2D, then projected into 3D using the camera poses and depth maps from VGGT. This gives geometry-semantic alignment essentially for free — the 3D positions come from the same model that produces the labels' parent geometry.
 
 The approach is inspired by [Ov3R](https://arxiv.org/abs/2507.22052) (Gong et al., 2025) but independently implemented, runs on Apple Silicon, and supports an arbitrary open-vocabulary label set at runtime.
+
+### Why TSDF fusion for the mesh?
+
+The pipeline already produces exactly what volumetric fusion wants: per-frame metric depth maps with known camera poses. **TSDF fusion** (the KinectFusion approach, standard in robotics perception) integrates every depth map into a signed-distance voxel grid, so per-frame depth noise *averages out* instead of accumulating, and the mesh — extracted via marching cubes — gets its colours directly from the video frames. Voxel size adapts to the scene (~256 voxels across the diagonal). This is more principled than fitting a surface to the merged point cloud after the fact; Poisson reconstruction remains available via `--mesh-method poisson`.
 
 ### Why Rerun for visualisation?
 

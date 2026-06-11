@@ -69,7 +69,11 @@ def parse_args() -> argparse.Namespace:
                    help="Custom label set, comma-separated. "
                         "Default: 20 common indoor categories")
     p.add_argument("--mesh", action="store_true",
-                   help="Generate a Poisson surface mesh from the point cloud")
+                   help="Generate a coloured surface mesh (TSDF fusion of the "
+                        "depth maps by default)")
+    p.add_argument("--mesh-method", choices=["tsdf", "poisson"], default="tsdf",
+                   help="tsdf: volumetric fusion of depth maps (robust, coloured); "
+                        "poisson: surface fit on the merged point cloud")
     p.add_argument("--no-viewer", action="store_true",
                    help="Skip Rerun viewer (just save .ply files)")
     p.add_argument("--no-turntable", action="store_true",
@@ -161,6 +165,7 @@ def main() -> None:
         result,
         conf_threshold=args.conf,
         build_mesh=args.mesh,
+        mesh_method=args.mesh_method,
         output_dir=args.output,
         console=console,
     )
@@ -304,6 +309,7 @@ def _save_run_info(
             "image_size":         args.image_size,
             "semantic":           args.semantic,
             "mesh":               args.mesh,
+            "mesh_method":        args.mesh_method if args.mesh else None,
         },
         "results": {
             "n_points":           len(pts),

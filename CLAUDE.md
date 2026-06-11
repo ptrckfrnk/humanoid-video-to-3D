@@ -66,14 +66,14 @@ Full design rationale in README § Design choices.
 - VGGT-1B: ✅ float32 only, ~20 frame limit
 - SAM2: ✅ MPS
 - OpenCLIP: ✅ MPS
-- Open3D (Poisson mesh): ✅ depth=6 · ❌ depth≥7 segfaults (ARM build bug — see B6 in PLAN.md)
+- Open3D meshing: ✅ TSDF fusion (default, all platforms) · Poisson fallback: depth=6 only on MPS — depth≥7 segfaults (ARM build bug)
 - VGGT-Omega: ❌ CUDA only — requires cloud GPU
 
 ---
 
 ## Known open issues
 
-- **B6**: Poisson segfaults at depth≥7 on Apple Silicon — must fix before GPU run. Try `open3d==0.17.0` or fall back to `ball_pivoting`.
+- ~~**B6**: Poisson segfault~~ — resolved: TSDF fusion is now the default mesh path and never touches the Poisson code; Poisson kept as `--mesh-method poisson` fallback.
 - **No real example outputs yet** — the GPU run (C1–C3 in PLAN.md) is the next critical step.
 - **`room.mov`** is a quick smoke-test video only; not suitable for README examples.
 

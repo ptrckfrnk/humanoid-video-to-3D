@@ -6,7 +6,12 @@ Steps:
   2. Filter by confidence threshold
   3. Remove NaN / inf values
   4. Statistical outlier removal (removes flying pixels / noise)
-  5. Optional: Poisson surface reconstruction → watertight mesh
+  5. Optional meshing:
+       tsdf (default) — volumetric TSDF fusion of the per-frame depth maps
+         using the predicted camera poses (KinectFusion-style). Averages out
+         per-frame depth noise, produces a coloured mesh via marching cubes,
+         and avoids the Open3D Poisson segfault on Apple Silicon entirely.
+       poisson — Poisson reconstruction on the merged point cloud (fallback)
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ def postprocess(
     result: ReconstructionResult,
     conf_threshold: float = 1.5,
     build_mesh: bool = False,
+    mesh_method: str = "tsdf",
     output_dir: Path | None = None,
     console=None,
 ) -> SceneResult:
@@ -94,7 +100,10 @@ def postprocess(
 
     if build_mesh:
         try:
-            mesh = _build_mesh(pcd, console=console)
+            if mesh_method == "tsdf":
+                mesh = _build_mesh_tsdf(result, pcd, conf_threshold, console=console)
+            else:
+                mesh = _build_mesh_poisson(pcd, console=console)
         except Exception as e:
             if console:
                 console.print(f"  [yellow]Mesh skipped:[/yellow] {e}")
@@ -170,7 +179,88 @@ def _print(console, msg: str) -> None:
         print(msg)
 
 
-def _build_mesh(
+def _build_mesh_tsdf(
+    result: ReconstructionResult,
+    pcd: o3d.geometry.PointCloud,
+    conf_threshold: float,
+    console=None,
+) -> o3d.geometry.TriangleMesh | None:
+    """
+    Volumetric TSDF fusion of the per-frame depth maps (KinectFusion-style).
+
+    Each depth map is integrated into a voxel grid using its predicted camera
+    pose; the mesh is extracted via marching cubes. Because every depth map
+    contributes to the signed-distance average, per-frame depth noise cancels
+    out instead of accumulating — and vertex colours come directly from the
+    video frames. Works identically on CUDA / MPS / CPU (pure C++ on CPU).
+
+    The (already aligned & filtered) point cloud is used only to size the
+    voxel grid to the scene.
+    """
+    S, H, W = result.depth.shape
+
+    # Scene-adaptive resolution: ~256 voxels across the scene diagonal,
+    # clamped to [4 mm, 3 cm]. sdf_trunc at 4 voxels is the usual heuristic.
+    diag  = float(np.linalg.norm(pcd.get_axis_aligned_bounding_box().get_extent()))
+    voxel = float(np.clip(diag / 256.0, 0.004, 0.03))
+
+    # Truncate depth just past the furthest confident return — far outliers
+    # would otherwise carve through good geometry. (Not the bbox diagonal:
+    # camera-space depth can exceed the scene's own extent.)
+    conf_depths = result.depth[result.depth_conf >= conf_threshold]
+    depth_trunc = float(np.percentile(conf_depths, 99) * 1.2) if len(conf_depths) else diag
+
+    _print(console, f"  TSDF fusion: {S} depth maps, voxel={voxel * 100:.1f} cm…")
+    t0 = time.perf_counter()
+
+    volume = o3d.pipelines.integration.ScalableTSDFVolume(
+        voxel_length=voxel,
+        sdf_trunc=4 * voxel,
+        color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
+    )
+
+    for s in range(S):
+        depth = result.depth[s].astype(np.float32).copy()
+        depth[result.depth_conf[s] < conf_threshold] = 0.0   # 0 = invalid pixel
+
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            o3d.geometry.Image(np.ascontiguousarray(result.images[s])),
+            o3d.geometry.Image(depth),
+            depth_scale=1.0,            # depth is already metric
+            depth_trunc=depth_trunc,
+            convert_rgb_to_intensity=False,
+        )
+        K = result.intrinsics[s]
+        intrinsic = o3d.camera.PinholeCameraIntrinsic(
+            W, H, K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+        )
+        extrinsic = np.eye(4)
+        extrinsic[:3, :4] = result.extrinsics[s]   # cam-from-world, as expected
+        volume.integrate(rgbd, intrinsic, extrinsic)
+
+    mesh = volume.extract_triangle_mesh()
+    _print(
+        console,
+        f"  [green]✓[/green] TSDF fusion done  ({time.perf_counter() - t0:.1f}s) — "
+        f"{len(mesh.vertices):,} vertices  {len(mesh.triangles):,} faces",
+    )
+    if len(mesh.vertices) == 0:
+        return None
+
+    # Drop small floating components (isolated noise blobs)
+    cluster_ids, cluster_sizes, _ = mesh.cluster_connected_triangles()
+    cluster_ids   = np.asarray(cluster_ids)
+    cluster_sizes = np.asarray(cluster_sizes)
+    if len(cluster_sizes) > 1:
+        min_tris = max(100, int(0.01 * cluster_sizes.max()))
+        mesh.remove_triangles_by_mask(cluster_sizes[cluster_ids] < min_tris)
+        mesh.remove_unreferenced_vertices()
+
+    mesh.compute_vertex_normals()
+    return mesh
+
+
+def _build_mesh_poisson(
     pcd: o3d.geometry.PointCloud,
     console=None,
 ) -> o3d.geometry.TriangleMesh | None:

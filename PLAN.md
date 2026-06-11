@@ -99,7 +99,7 @@ Captured at decision time. The chosen approach is VGGT-1B/Omega + SAM2+CLIP — 
 | ~~B3~~ | ~~P2~~ | ~~Better mesh post-processing~~ | ✅ Done: downsampling fixed, depth=6 smoke-tested on MPS |
 | B4 | P2 | Texture projection onto mesh | Photorealistic mesh colours from video frames → UV map |
 | B5 | P3 | Sliding window + ICP for long videos on MPS | 60–100 frame coverage without CUDA; complex but high value |
-| B6 | **P1** | Fix Poisson segfault at depth≥7 on Apple Silicon | Needed for quality mesh on GPU run; try `open3d==0.17.0` or `ball_pivoting` fallback |
+| ~~B6~~ | ~~P1~~ | ~~Fix Poisson segfault at depth≥7 on Apple Silicon~~ | ✅ Done: TSDF fusion is the default mesh path (sidesteps Poisson entirely); `--mesh-method poisson` kept as fallback |
 
 ---
 
