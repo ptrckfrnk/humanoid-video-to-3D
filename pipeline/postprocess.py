@@ -123,9 +123,11 @@ def _build_mesh(pcd: o3d.geometry.PointCloud) -> o3d.geometry.TriangleMesh:
     )
     pcd.orient_normals_consistent_tangent_plane(k=100)
 
-    mesh, _densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        pcd, depth=9
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pcd, depth=10
     )
+    # Trim low-density vertices — these are the shrinkwrap artifacts at scene edges
+    mesh.remove_vertices_by_mask(np.asarray(densities) < np.quantile(densities, 0.05))
     mesh = mesh.filter_smooth_simple(number_of_iterations=3)
     mesh.compute_vertex_normals()
     return mesh
