@@ -151,6 +151,7 @@ humanoid-video-to-3D/
 - [ ] High-fidelity outputs via cloud GPU (VGGT-Omega, 80 frames)
 - [ ] Turntable GIFs embedded in README (need real outputs first)
 - [ ] README examples section: 3 scenes, side-by-side input/output layout
+- [x] Mesh logged in Rerun viewer (world/scene/mesh) — auto-shows colours after B4
 - [ ] B4: Texture projection onto mesh (colours from video frames → mesh vertices)
 
 ---

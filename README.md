@@ -139,7 +139,7 @@ outputs/
 | **Open3D** (Python) | `import open3d as o3d; o3d.visualization.draw([o3d.io.read_point_cloud("outputs/scene.ply")])` |
 
 The **Rerun viewer** shows everything at once:
-- *Top panel*: fly through the 3D point cloud; camera frustums mark where each frame was taken
+- *Top panel*: fly through the 3D point cloud and mesh (if `--mesh`); camera frustums mark where each frame was taken
 - *Bottom left*: RGB frame — scrub the timeline to walk through the video
 - *Bottom middle*: Depth map — colour = distance from camera
 - *Bottom right*: Semantic overlay (if `--semantic` was used)
