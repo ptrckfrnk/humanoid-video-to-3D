@@ -21,7 +21,7 @@ python run.py examples/room.mp4 --semantic
 
 | Stage | What happens |
 |---|---|
-| **1. Frame extraction** | Evenly samples N frames from the video using OpenCV |
+| **1. Frame extraction** | Samples N frames from the video using farthest-point sampling on appearance thumbnails — maximises visual diversity, skips near-duplicate frames where the camera barely moved |
 | **2. Feed-forward reconstruction** | VGGT-Omega / VGGT-1B predicts depth maps, camera poses, and dense 3D point maps in a single forward pass — no COLMAP, no iterative optimisation |
 | **3. Point cloud post-processing** | Open3D merges per-frame point maps, filters by confidence, and removes statistical outliers |
 | **4. Semantic labeling** *(optional)* | SAM 2.1 segments each frame; OpenCLIP matches crops to text labels; labels are projected into 3D |
@@ -98,8 +98,8 @@ python run.py path/to/video.mp4 --no-viewer
 | Flag | Default | Description |
 |---|---|---|
 | `video` | — | Input video path (MP4, MOV, AVI) |
-| `--output` | `outputs/` | Output directory |
-| `--frames` | `50` | Frames to sample (50 is safe for 16 GB; 80–100 for CUDA) |
+| `--output` | `outputs/<video>_<timestamp>` | Output directory — auto-named so runs never overwrite each other |
+| `--frames` | `50` | Frames to sample (auto-capped at 20 on MPS; 80–100 recommended on CUDA) |
 | `--model` | `auto` | `vggt-omega` on CUDA, `vggt` elsewhere |
 | `--device` | auto | Force `cuda` / `mps` / `cpu` |
 | `--conf` | `1.5` | Confidence threshold — higher = cleaner but sparser |
@@ -107,21 +107,27 @@ python run.py path/to/video.mp4 --no-viewer
 | `--labels` | 20 indoor classes | Custom comma-separated label list |
 | `--mesh` | off | Run Poisson surface reconstruction |
 | `--no-viewer` | off | Skip Rerun, just save `.ply` files |
+| `--no-turntable` | off | Skip turntable GIF generation |
 
 ---
 
 ## Outputs
 
-All files are written to `outputs/` (or `--output`):
+Each run saves to its own timestamped directory so results are never overwritten:
 
 ```
 outputs/
-├── frames/              # extracted PNG frames
-├── scene.ply            # RGB point cloud  ← open in MeshLab
-├── scene_semantic.ply   # semantic cloud   ← coloured by class
-├── scene_mesh.ply       # surface mesh     ← if --mesh
-└── demo.rrd             # Rerun session    ← rerun outputs/demo.rrd
+└── room_20260611_143022/       # <video>_<timestamp>
+    ├── frames/                 # extracted PNG frames
+    ├── scene.ply               # RGB point cloud       ← open in MeshLab
+    ├── scene_semantic.ply      # semantic cloud        ← if --semantic
+    ├── scene_mesh.ply          # surface mesh          ← if --mesh
+    ├── turntable.gif           # 360° orbit render     ← auto-generated
+    ├── demo.rrd                # Rerun session         ← rerun <path>/demo.rrd
+    └── run_info.json           # parameters + metrics for this run
 ```
+
+`run_info.json` records the full parameter set, point count, bounding box volume, average point density, and per-stage timings — useful for comparing runs after code or parameter changes.
 
 ### Viewing the outputs
 
@@ -191,11 +197,13 @@ humanoid-video-to-3D/
 │   ├── postprocess.py      # Open3D cleanup + optional mesh
 │   └── semantics.py        # SAM2 + CLIP → 3D labels
 ├── viz/
-│   └── viewer.py           # Rerun visualization
+│   ├── viewer.py           # Rerun visualization
+│   └── turntable.py        # 360° GIF renderer (called automatically by run.py)
 ├── utils/
 │   └── device.py           # hardware detection (CUDA / MPS / CPU)
 ├── scripts/
-│   └── download_models.py  # pre-fetch HuggingFace checkpoints
+│   ├── download_models.py  # pre-fetch HuggingFace checkpoints
+│   └── turntable.py        # standalone GIF renderer: python scripts/turntable.py <ply> <gif>
 └── examples/               # sample inputs
 ```
 

@@ -141,10 +141,17 @@ humanoid-video-to-3D/
 - [x] Stage 5: Rerun visualization with named semantic legend (viz/viewer.py)
 - [x] README with design choices
 - [x] Public repo pushed to GitHub (ptrckfrnk/humanoid-video-to-3D)
+- [x] Farthest-point sampling for diverse frame selection (pipeline/extract_frames.py)
+- [x] Improved mesh: Poisson depth 10 + density trimming (pipeline/postprocess.py)
+- [x] Turntable GIF auto-generated after every run (viz/turntable.py)
+- [x] Timestamped output dirs — runs never overwrite each other
+- [x] run_info.json: parameters + metrics saved per run
+- [x] README and PLAN.md up to date
 - [ ] Real example videos shot and run through pipeline
 - [ ] High-fidelity outputs via cloud GPU (VGGT-Omega, 80 frames)
-- [ ] Turntable GIF of each scene → embedded in README
+- [ ] Turntable GIFs embedded in README (need real outputs first)
 - [ ] README examples section: 3 scenes, side-by-side input/output layout
+- [ ] B4: Texture projection onto mesh (colours from video frames → mesh vertices)
 
 ---
 
