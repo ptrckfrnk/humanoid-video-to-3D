@@ -31,7 +31,11 @@ import datetime
 import json
 import sys
 import time
+import warnings
 from pathlib import Path
+
+# VGGT uses the deprecated torch.cuda.amp.autocast API — nothing we can fix upstream
+warnings.filterwarnings("ignore", message=".*torch.cuda.amp.autocast.*", category=FutureWarning)
 
 import numpy as np
 from rich.console import Console
