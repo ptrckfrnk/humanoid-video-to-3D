@@ -215,6 +215,24 @@ def main() -> None:
         o3d.io.write_point_cloud(str(sem_path), semantic.colored_cloud)
         console.print(f"  [green]✓[/green] Semantic cloud  → {sem_path}")
 
+        # CLIP features + observation table → enables natural-language queries
+        from pipeline.openvocab import save_feature_bundle
+        from pipeline.semantics import CLIP_MODEL, CLIP_PRETRAINED
+        feat_path = args.output / "scene_features.npz"
+        save_feature_bundle(
+            feat_path,
+            points=np.asarray(scene.point_cloud.points, dtype=np.float32),
+            colors=(np.asarray(scene.point_cloud.colors) * 255).astype(np.uint8),
+            mask_feats=semantic.mask_feats,
+            obs_point=semantic.obs_point,
+            obs_mask=semantic.obs_mask,
+            point_labels=semantic.point_label_ids,
+            label_set=semantic.label_set,
+            clip_model=CLIP_MODEL,
+            clip_pretrained=CLIP_PRETRAINED,
+        )
+        console.print(f"  [green]✓[/green] Query features  → {feat_path}")
+
     if scene.mesh is not None:
         mesh_path = args.output / "scene_mesh.ply"
         o3d.io.write_triangle_mesh(str(mesh_path), scene.mesh)
@@ -270,6 +288,9 @@ def main() -> None:
         console.print(f"  Turntable GIF:  [dim]open {gif_path}[/dim]")
     if (args.output / "demo.rrd").exists():
         console.print(f"  Reopen viewer:  [dim]rerun {args.output}/demo.rrd[/dim]")
+    if semantic is not None:
+        console.print(f"  Search in 3D:   [dim]python query.py {args.output} "
+                      f"\"something to sit on\"[/dim]")
     console.print()
 
 

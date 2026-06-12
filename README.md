@@ -24,8 +24,9 @@ python run.py examples/room.mp4 --semantic
 | **1. Frame extraction** | Samples N frames from the video using farthest-point sampling on appearance thumbnails — maximises visual diversity, skips near-duplicate frames where the camera barely moved |
 | **2. Feed-forward reconstruction** | VGGT-Omega / VGGT-1B predicts depth maps, camera poses, and dense 3D point maps in a single forward pass — no COLMAP, no iterative optimisation |
 | **3. Point cloud post-processing** | Open3D merges per-frame point maps, filters by confidence, and removes statistical outliers |
-| **4. Semantic labeling** *(optional)* | SAM 2.1 segments each frame; OpenCLIP matches crops to text labels; labels are projected into 3D |
+| **4. Semantic labeling** *(optional)* | SAM 2.1 segments each frame; OpenCLIP encodes every segment; labels are fused into 3D by multi-view voting with a z-buffer occlusion test |
 | **5. Visualization** | Rerun opens an interactive browser viewer showing the RGB frames, depth maps, camera trajectories, and 3D scene |
+| **6. Open-vocabulary query** *(optional)* | `query.py` searches the reconstructed scene with *any* natural-language phrase — not just the label set — and renders a 3D relevancy heatmap |
 
 ---
 
@@ -93,6 +94,23 @@ python run.py path/to/video.mp4 --device cpu    # no GPU
 python run.py path/to/video.mp4 --no-viewer
 ```
 
+### Search the scene in natural language
+
+Any run made with `--semantic` saves per-segment CLIP features alongside the
+geometry, so the reconstructed scene becomes *queryable* — with arbitrary
+phrases, not just the labels used at reconstruction time:
+
+```bash
+python query.py outputs/room_20260612_010453 "office chair"
+python query.py outputs/room_20260612_010453 "something to sit on" "coffee mug"
+```
+
+Each query takes milliseconds (no re-reconstruction) and produces a 3D
+relevancy heatmap — shown in the Rerun viewer next to the RGB cloud and saved
+as `query_<phrase>.ply`. Relevancy is computed LERF-style against canonical
+negative prompts, so the heatmap highlights *how query-like* each region is
+rather than raw similarity.
+
 ### All flags
 
 | Flag | Default | Description |
@@ -122,6 +140,8 @@ outputs/
     ├── frames/                 # extracted PNG frames
     ├── scene.ply               # RGB point cloud       ← open in MeshLab
     ├── scene_semantic.ply      # semantic cloud        ← if --semantic
+    ├── scene_features.npz      # CLIP features         ← if --semantic; used by query.py
+    ├── query_<phrase>.ply      # query heatmap         ← written by query.py
     ├── scene_mesh.ply          # surface mesh          ← if --mesh
     ├── turntable.gif           # 360° orbit render     ← auto-generated
     ├── demo.rrd                # Rerun session         ← rerun <path>/demo.rrd
@@ -175,9 +195,13 @@ Rather than training a dedicated semantic model, we use two powerful off-the-she
 - **SAM 2.1** (Meta) segments every object in each frame automatically, with no prompts.
 - **OpenCLIP** (ViT-B/32, OpenAI weights) embeds each crop and compares it against text embeddings for candidate labels via cosine similarity.
 
-Labels are assigned per-segment in 2D, then projected into 3D using the camera poses and depth maps from VGGT. This gives geometry-semantic alignment essentially for free — the 3D positions come from the same model that produces the labels' parent geometry.
+Labels are assigned per-segment in 2D, then **fused into 3D by multi-view voting**: every point is projected into every frame, a z-buffer test against that frame's depth map rejects occluded observations (so points can't inherit labels from surfaces in front of them), and the per-point label is the majority across all views that genuinely saw it. Geometry-semantic alignment comes for free — the 3D positions, the depth maps used for the occlusion test, and the camera poses all come from the same forward pass.
 
 The approach is inspired by [Ov3R](https://arxiv.org/abs/2507.22052) (Gong et al., 2025) but independently implemented, runs on Apple Silicon, and supports an arbitrary open-vocabulary label set at runtime.
+
+### Why open-vocabulary 3D querying?
+
+For a robot, a reconstruction is most useful when it can be *asked things*: "where is the mug?", "something to sit on". Rather than committing to a fixed label set, the pipeline keeps the CLIP feature of every SAM2 segment plus a sparse table of which 3D points were visible in which segments (reusing the occlusion-tested visibility from label fusion). A point's semantic feature is the mean of its segments' features — and since scoring is linear (`text · mean(f) = mean(text · f)`), queries are evaluated segment-side: one small matrix product plus a sparse average. That's **~30× less memory than a dense per-point feature field, with identical results**, and any phrase can be searched in milliseconds without re-running reconstruction. Relevancy follows [LERF](https://arxiv.org/abs/2303.09553) (Kerr et al., ICCV 2023): query similarity is contrasted against canonical negatives ("object", "stuff", …) for crisp, calibrated heatmaps.
 
 ### Why TSDF fusion for the mesh?
 
@@ -194,13 +218,16 @@ The pipeline already produces exactly what volumetric fusion wants: per-frame me
 ```
 humanoid-video-to-3D/
 ├── run.py                  # main entry point
+├── query.py                # natural-language 3D scene search
 ├── environment.yml         # conda environment (all deps except PyTorch)
 ├── install.sh              # platform-aware PyTorch + model installer
 ├── pipeline/
 │   ├── extract_frames.py   # video → PNG frames
 │   ├── reconstruct.py      # VGGT / VGGT-Omega inference → point maps
-│   ├── postprocess.py      # Open3D cleanup + optional mesh
-│   └── semantics.py        # SAM2 + CLIP → 3D labels
+│   ├── postprocess.py      # Open3D cleanup + TSDF / Poisson mesh
+│   ├── semantics.py        # SAM2 + CLIP → multi-view fused 3D labels
+│   └── openvocab.py        # CLIP feature bundle + query scoring
+├── tests/                  # unit tests (geometry, fusion, query scoring)
 ├── viz/
 │   ├── viewer.py           # Rerun visualization
 │   └── turntable.py        # 360° GIF renderer (called automatically by run.py)

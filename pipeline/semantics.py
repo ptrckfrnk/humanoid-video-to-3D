@@ -16,6 +16,9 @@ For each video frame:
   6. Each visible, labeled observation casts one vote; the per-point label is
      the majority across all views — a single bad mask in one frame can no
      longer poison a point
+  7. The per-segment CLIP features and the point→segment observation table
+     are kept (see pipeline/openvocab.py) so the scene can later be queried
+     with arbitrary natural language via query.py
 
 Gracefully degrades — if SAM2 or OpenCLIP are missing it raises ImportError
 and run.py catches it.
@@ -36,6 +39,10 @@ from pipeline.postprocess import SceneResult
 
 console = Console()
 
+# Must match between labeling (image tower) and query.py (text tower)
+CLIP_MODEL      = "ViT-B-32-quickgelu"
+CLIP_PRETRAINED = "openai"
+
 DEFAULT_LABELS = [
     "chair", "table", "sofa", "desk", "bed",
     "floor", "wall", "ceiling", "door", "window",
@@ -53,9 +60,13 @@ LABEL_COLORS = {l: _label_color(l) for l in DEFAULT_LABELS}
 
 @dataclass
 class SemanticResult:
-    labels:        List[str]                        # per-point label string
-    colored_cloud: o3d.geometry.PointCloud          # cloud coloured by class
-    label_set:     List[str]                        # all candidate labels used
+    labels:          List[str]                      # per-point label string
+    colored_cloud:   o3d.geometry.PointCloud        # cloud coloured by class
+    label_set:       List[str]                      # all candidate labels used
+    point_label_ids: np.ndarray                     # (N,) int32 label index; -1 = unobserved
+    mask_feats:      np.ndarray                     # (M, D) float16 CLIP features, L2-normalised
+    obs_point:       np.ndarray                     # (K,) int32 observation table: point index
+    obs_mask:        np.ndarray                     # (K,) int32 observation table: segment index
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -88,10 +99,10 @@ def label_scene(
     # "-quickgelu" matches the activation the OpenAI weights were trained with;
     # the plain ViT-B-32 config uses standard GELU and degrades the embeddings.
     clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-        "ViT-B-32-quickgelu", pretrained="openai"
+        CLIP_MODEL, pretrained=CLIP_PRETRAINED
     )
     clip_model = clip_model.to(device).eval()
-    tokenizer  = open_clip.get_tokenizer("ViT-B-32-quickgelu")
+    tokenizer  = open_clip.get_tokenizer(CLIP_MODEL)
 
     with torch.inference_mode():
         text_tokens   = tokenizer([f"a photo of a {l}" for l in labels]).to(device)
@@ -100,21 +111,33 @@ def label_scene(
 
     # ── Per-frame segmentation + labeling ────────────────────────────────────
     S = result.images.shape[0]
-    label_maps: list[np.ndarray] = []   # (H, W) int per frame; -1 = unlabeled
+    seg_maps:    list[np.ndarray] = []   # (H, W) global segment index; -1 = none
+    feats_list:  list[np.ndarray] = []   # per frame: (m, D) float16 CLIP features
+    labels_list: list[np.ndarray] = []   # per frame: (m,) int32 argmax label
+    offset = 0                           # frame-local → global segment indices
 
     for s in track(range(S), description="  Labeling frames"):
-        lmap = _label_frame(
+        seg_map, feats, mask_labels = _label_frame(
             result.images[s], mask_gen,
             clip_model, clip_preprocess, text_features,
-            labels, device,
+            device,
         )
-        label_maps.append(lmap)
+        seg_maps.append(np.where(seg_map >= 0, seg_map + offset, -1).astype(np.int32))
+        feats_list.append(feats)
+        labels_list.append(mask_labels)
+        offset += len(mask_labels)
+
+    feat_dim    = feats_list[0].shape[1] if offset else 512
+    mask_feats  = (np.concatenate(feats_list) if offset
+                   else np.zeros((0, feat_dim), np.float16))
+    mask_labels = (np.concatenate(labels_list) if offset
+                   else np.zeros((0,), np.int32))
 
     # ── Propagate 2D labels → 3D points (multi-view fusion) ──────────────────
     pts_all = np.asarray(scene.point_cloud.points)   # (N, 3)
 
-    best, n_votes = _fuse_labels(
-        pts_all, label_maps,
+    best, n_votes, obs_point, obs_mask = _fuse_labels(
+        pts_all, seg_maps, mask_labels,
         result.extrinsics, result.intrinsics, result.depth,
         n_labels=len(labels),
     )
@@ -148,6 +171,10 @@ def label_scene(
         labels=str_labels,
         colored_cloud=sem_cloud,
         label_set=labels,
+        point_label_ids=point_labels.astype(np.int32),
+        mask_feats=mask_feats,
+        obs_point=obs_point,
+        obs_mask=obs_mask,
     )
 
 
@@ -159,19 +186,28 @@ def _label_frame(
     clip_model,
     clip_preprocess,
     text_features: torch.Tensor,   # (L, D)
-    labels: List[str],
     device: torch.device,
     batch_size: int = 64,
-) -> np.ndarray:
-    """Return (H, W) int32 array: index into labels, or -1 for unlabeled pixels."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Segment one frame and CLIP-encode every segment.
+
+    Returns:
+        seg_map:     (H, W) int32 — frame-local segment index, -1 = no segment
+        feats:       (m, D) float16 — L2-normalised CLIP feature per segment
+        mask_labels: (m,) int32 — argmax label index per segment
+    """
     from PIL import Image as PILImage
 
     H, W = frame_rgb.shape[:2]
-    label_map = np.full((H, W), -1, dtype=np.int32)
+    seg_map = np.full((H, W), -1, dtype=np.int32)
+    empty = (seg_map,
+             np.zeros((0, text_features.shape[1]), np.float16),
+             np.zeros((0,), np.int32))
 
     masks = mask_gen.generate(frame_rgb)
     if not masks:
-        return label_map
+        return empty
 
     # Largest masks first so small objects can override large background later
     masks = sorted(masks, key=lambda m: m["area"], reverse=True)
@@ -194,34 +230,39 @@ def _label_frame(
         segs.append(seg)
 
     if not crops:
-        return label_map
+        return empty
 
-    lbl_idxs: list[int] = []
+    feat_chunks: list[np.ndarray] = []
     with torch.inference_mode():
         for i in range(0, len(crops), batch_size):
             batch = torch.stack(crops[i : i + batch_size]).to(device)
-            feats = clip_model.encode_image(batch)
-            feats = feats / feats.norm(dim=-1, keepdim=True)        # (B, D)
-            lbl_idxs.extend((feats @ text_features.T).argmax(dim=-1).cpu().tolist())
+            f = clip_model.encode_image(batch)
+            f = f / f.norm(dim=-1, keepdim=True)                    # (B, D)
+            feat_chunks.append(f.cpu().float().numpy())
+
+    feats = np.concatenate(feat_chunks)                             # (m, D)
+    mask_labels = (feats @ text_features.cpu().float().numpy().T).argmax(axis=1)
 
     # Paint in sorted order: large masks first, smaller ones override on top
-    for seg, lbl_idx in zip(segs, lbl_idxs):
-        label_map[seg] = lbl_idx
+    for i, seg in enumerate(segs):
+        seg_map[seg] = i
 
-    return label_map
+    return seg_map, feats.astype(np.float16), mask_labels.astype(np.int32)
 
 
 def _fuse_labels(
     pts_world:     np.ndarray,        # (N, 3)
-    label_maps:    List[np.ndarray],  # S × (H, W) int32; -1 = unlabeled
+    seg_maps:      List[np.ndarray],  # S × (H, W) int32 global segment index; -1 = none
+    mask_labels:   np.ndarray,        # (M,) int32 — label index per global segment
     extrinsics:    np.ndarray,        # (S, 3, 4) cam-from-world
     intrinsics:    np.ndarray,        # (S, 3, 3)
     depth_maps:    np.ndarray,        # (S, H, W) metric depth
     n_labels:      int,
     occlusion_tol: float = 0.05,      # relative depth tolerance for visibility
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Fuse per-frame 2D label maps into per-point 3D labels by majority vote.
+    Fuse per-frame 2D segment maps into per-point 3D labels by majority vote,
+    and record the point → segment observation table for open-vocab querying.
 
     A frame votes for a point only if the point projects inside the image AND
     its camera-space depth matches the frame's depth map at that pixel within
@@ -229,14 +270,18 @@ def _fuse_labels(
     frame, not hidden behind a nearer surface.
 
     Returns:
-        best:    (N,) int64 — winning label index per point (argmax of votes;
-                 meaningless where n_votes == 0)
-        n_votes: (N,) int64 — number of frames that cast a vote for the point
+        best:      (N,) int64 — winning label index per point (argmax of
+                   votes; meaningless where n_votes == 0)
+        n_votes:   (N,) int64 — number of frames that cast a vote for the point
+        obs_point: (K,) int32 — observation table: point index
+        obs_mask:  (K,) int32 — observation table: global segment index
     """
     N = len(pts_world)
     S, H, W = depth_maps.shape
 
     votes = np.zeros((N, n_labels), dtype=np.uint16)
+    obs_point_chunks: list[np.ndarray] = []
+    obs_mask_chunks:  list[np.ndarray] = []
 
     for s in range(S):
         uvs, z = _project_points(pts_world, extrinsics[s], intrinsics[s])
@@ -256,11 +301,22 @@ def _fuse_labels(
             continue
         idx, us, vs = idx[visible], us[visible], vs[visible]
 
-        lbl     = label_maps[s][vs, us]
-        labeled = lbl >= 0
-        np.add.at(votes, (idx[labeled], lbl[labeled]), 1)
+        seg     = seg_maps[s][vs, us]
+        in_seg  = seg >= 0
+        if not in_seg.any():
+            continue
+        pt_idx, seg_idx = idx[in_seg].astype(np.int32), seg[in_seg].astype(np.int32)
 
-    return votes.argmax(axis=1), votes.sum(axis=1, dtype=np.int64)
+        np.add.at(votes, (pt_idx, mask_labels[seg_idx]), 1)
+        obs_point_chunks.append(pt_idx)
+        obs_mask_chunks.append(seg_idx)
+
+    obs_point = (np.concatenate(obs_point_chunks) if obs_point_chunks
+                 else np.zeros((0,), np.int32))
+    obs_mask  = (np.concatenate(obs_mask_chunks) if obs_mask_chunks
+                 else np.zeros((0,), np.int32))
+
+    return votes.argmax(axis=1), votes.sum(axis=1, dtype=np.int64), obs_point, obs_mask
 
 
 def _project_points(

@@ -58,6 +58,11 @@ Captured at decision time. The chosen approach is VGGT-1B/Omega + SAM2+CLIP — 
 - [x] Mesh pipeline smoke-tested on MPS (depth=6 works; depth≥7 segfaults — Open3D ARM bug)
 - [x] Stage 3 progress output: per-step timing + point counts
 - [x] Open3D verbosity silenced (eliminated blank-line spam)
+- [x] Multi-view semantic fusion: z-buffer occlusion test + majority voting (pipeline/semantics.py)
+- [x] TSDF fusion meshing (default) — resolves B6, coloured mesh (pipeline/postprocess.py)
+- [x] Scene-adaptive --conf-percentile filtering — resolves B1
+- [x] Open-vocabulary 3D querying: per-segment CLIP features + sparse observation table, LERF-style relevancy (query.py, pipeline/openvocab.py)
+- [x] Unit test suite: geometry, fusion, TSDF, query scoring (tests/, 13 tests)
 - [x] Public repo pushed to GitHub (ptrckfrnk/humanoid-video-to-3D)
 - [ ] Real example videos shot and processed
 - [ ] High-fidelity outputs via cloud GPU (VGGT-Omega, 80 frames)

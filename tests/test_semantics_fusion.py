@@ -23,11 +23,11 @@ K = np.array([[100.0, 0.0, 32.0],
 IDENTITY_POSE = np.hstack([np.eye(3), np.zeros((3, 1))])  # cam at origin, +z forward
 
 
-def _frame(depth_value: float, label_idx: int):
-    """A frame whose depth map is constant and whose every pixel has one label."""
+def _frame(depth_value: float, seg_idx: int):
+    """A frame with constant depth whose every pixel belongs to one segment."""
     depth = np.full((H, W), depth_value, dtype=np.float32)
-    labels = np.full((H, W), label_idx, dtype=np.int32)
-    return depth, labels
+    seg = np.full((H, W), seg_idx, dtype=np.int32)
+    return depth, seg
 
 
 def test_occluded_point_gets_no_vote():
@@ -35,25 +35,29 @@ def test_occluded_point_gets_no_vote():
     # Both project to the image centre, but only A should receive the label.
     pts = np.array([[0.0, 0.0, 2.0],
                     [0.0, 0.0, 5.0]])
-    depth, labels = _frame(depth_value=2.0, label_idx=1)
+    depth, seg = _frame(depth_value=2.0, seg_idx=0)
+    mask_labels = np.array([1], dtype=np.int32)   # segment 0 → label 1
 
-    best, n_votes = _fuse_labels(
-        pts, [labels],
+    best, n_votes, obs_p, obs_m = _fuse_labels(
+        pts, [seg], mask_labels,
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
     assert n_votes[0] == 1 and best[0] == 1   # visible → labeled
     assert n_votes[1] == 0                     # occluded → no vote
+    assert list(obs_p) == [0] and list(obs_m) == [0]
 
 
 def test_majority_vote_overrides_single_bad_frame():
-    # Three frames see the same point; two say label 2, one says label 0.
+    # Three frames see the same point; segments labeled 2, 0, 2.
     pts = np.array([[0.0, 0.0, 2.0]])
-    d, l_good = _frame(2.0, 2)
-    _, l_bad = _frame(2.0, 0)
+    d, seg0 = _frame(2.0, 0)
+    _, seg1 = _frame(2.0, 1)
+    _, seg2 = _frame(2.0, 2)
+    mask_labels = np.array([2, 0, 2], dtype=np.int32)
 
-    best, n_votes = _fuse_labels(
-        pts, [l_good, l_bad, l_good],
+    best, n_votes, *_ = _fuse_labels(
+        pts, [seg0, seg1, seg2], mask_labels,
         np.repeat(IDENTITY_POSE[None], 3, axis=0),
         np.repeat(K[None], 3, axis=0),
         np.repeat(d[None], 3, axis=0),
@@ -63,26 +67,27 @@ def test_majority_vote_overrides_single_bad_frame():
     assert best[0] == 2
 
 
-def test_unlabeled_pixels_cast_no_vote():
+def test_unsegmented_pixels_cast_no_vote():
     pts = np.array([[0.0, 0.0, 2.0]])
-    depth, labels = _frame(2.0, -1)   # SAM found nothing here
+    depth, seg = _frame(2.0, -1)   # SAM found nothing here
 
-    best, n_votes = _fuse_labels(
-        pts, [labels],
+    best, n_votes, obs_p, obs_m = _fuse_labels(
+        pts, [seg], np.zeros((0,), np.int32),
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
     assert n_votes[0] == 0
+    assert len(obs_p) == 0 and len(obs_m) == 0
 
 
 def test_point_outside_frustum_gets_no_vote():
     # Behind the camera and far off to the side — neither may vote.
     pts = np.array([[0.0, 0.0, -2.0],
                     [50.0, 0.0, 2.0]])
-    depth, labels = _frame(2.0, 1)
+    depth, seg = _frame(2.0, 0)
 
-    _, n_votes = _fuse_labels(
-        pts, [labels],
+    _, n_votes, *_ = _fuse_labels(
+        pts, [seg], np.array([1], np.int32),
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
@@ -92,17 +97,37 @@ def test_point_outside_frustum_gets_no_vote():
 def test_occlusion_tolerance_is_relative():
     # 3% depth error at z=2 (6 cm) passes the default 5% tolerance;
     # 10% (20 cm) fails.
-    depth, labels = _frame(2.0, 1)
+    depth, seg = _frame(2.0, 0)
     pts = np.array([[0.0, 0.0, 2.0 * 1.03],
                     [0.0, 0.0, 2.0 * 1.10]])
 
-    _, n_votes = _fuse_labels(
-        pts, [labels],
+    _, n_votes, *_ = _fuse_labels(
+        pts, [seg], np.array([1], np.int32),
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
     assert n_votes[0] == 1
     assert n_votes[1] == 0
+
+
+def test_observation_table_matches_visibility():
+    # Two frames: the point is visible in frame 0 (depth matches) but
+    # occluded in frame 1 (depth map says something nearer is in front).
+    pts = np.array([[0.0, 0.0, 2.0]])
+    d_match, seg0 = _frame(2.0, 0)
+    d_occl, seg1 = _frame(1.0, 1)
+    mask_labels = np.array([1, 2], dtype=np.int32)
+
+    _, n_votes, obs_p, obs_m = _fuse_labels(
+        pts, [seg0, seg1], mask_labels,
+        np.repeat(IDENTITY_POSE[None], 2, axis=0),
+        np.repeat(K[None], 2, axis=0),
+        np.stack([d_match, d_occl]),
+        n_labels=3,
+    )
+    assert n_votes[0] == 1
+    assert list(obs_p) == [0]
+    assert list(obs_m) == [0]   # only the frame-0 segment observed it
 
 
 def test_backproject_project_roundtrip():
