@@ -58,7 +58,7 @@ def test_tsdf_mesh_recovers_plane():
         result.world_points.reshape(-1, 3).astype(np.float64)
     )
 
-    mesh = _build_mesh_tsdf(result, pcd, conf_threshold=1.5)
+    mesh = _build_mesh_tsdf(result, pcd, conf_percentile=20.0)
 
     assert mesh is not None
     assert len(mesh.vertices) > 100

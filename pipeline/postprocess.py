@@ -3,7 +3,8 @@ Convert VGGT output into a clean Open3D point cloud and optional mesh.
 
 Steps:
   1. Flatten all frame point maps into a single cloud
-  2. Filter by confidence threshold
+  2. Filter by confidence percentile (scene-adaptive — VGGT's confidence
+     scale varies between scenes, so an absolute threshold doesn't transfer)
   3. Remove NaN / inf values
   4. Statistical outlier removal (removes flying pixels / noise)
   5. Optional meshing:
@@ -49,7 +50,7 @@ class SceneResult:
 
 def postprocess(
     result: ReconstructionResult,
-    conf_threshold: float = 1.5,
+    conf_percentile: float = 20.0,
     build_mesh: bool = False,
     mesh_method: str = "tsdf",
     output_dir: Path | None = None,
@@ -67,8 +68,11 @@ def postprocess(
 
     n_raw = len(pts)
 
-    # Confidence filter
-    mask = confs > conf_threshold
+    # Scene-adaptive confidence filter: drop the least-confident X% of points.
+    # VGGT's confidence scale differs between scenes, so the threshold is
+    # derived from this scene's own distribution rather than a fixed value.
+    conf_threshold = float(np.percentile(confs, conf_percentile))
+    mask = confs >= conf_threshold
     pts, colors = pts[mask], colors[mask]
 
     # Remove non-finite coordinates
@@ -78,8 +82,8 @@ def postprocess(
     n_filtered = len(pts)
     if console:
         console.print(
-            f"  Confidence filter (>{conf_threshold}): "
-            f"{n_raw:,} → {n_filtered:,} points"
+            f"  Confidence filter (drop lowest {conf_percentile:.0f}%, "
+            f"conf ≥ {conf_threshold:.2f}): {n_raw:,} → {n_filtered:,} points"
         )
 
     pcd = o3d.geometry.PointCloud()
@@ -101,7 +105,7 @@ def postprocess(
     if build_mesh:
         try:
             if mesh_method == "tsdf":
-                mesh = _build_mesh_tsdf(result, pcd, conf_threshold, console=console)
+                mesh = _build_mesh_tsdf(result, pcd, conf_percentile, console=console)
             else:
                 mesh = _build_mesh_poisson(pcd, console=console)
         except Exception as e:
@@ -182,7 +186,7 @@ def _print(console, msg: str) -> None:
 def _build_mesh_tsdf(
     result: ReconstructionResult,
     pcd: o3d.geometry.PointCloud,
-    conf_threshold: float,
+    conf_percentile: float,
     console=None,
 ) -> o3d.geometry.TriangleMesh | None:
     """
@@ -204,10 +208,13 @@ def _build_mesh_tsdf(
     diag  = float(np.linalg.norm(pcd.get_axis_aligned_bounding_box().get_extent()))
     voxel = float(np.clip(diag / 256.0, 0.004, 0.03))
 
+    # Depth-confidence threshold from this scene's own distribution
+    depth_conf_thr = float(np.percentile(result.depth_conf, conf_percentile))
+
     # Truncate depth just past the furthest confident return — far outliers
     # would otherwise carve through good geometry. (Not the bbox diagonal:
     # camera-space depth can exceed the scene's own extent.)
-    conf_depths = result.depth[result.depth_conf >= conf_threshold]
+    conf_depths = result.depth[result.depth_conf >= depth_conf_thr]
     depth_trunc = float(np.percentile(conf_depths, 99) * 1.2) if len(conf_depths) else diag
 
     _print(console, f"  TSDF fusion: {S} depth maps, voxel={voxel * 100:.1f} cm…")
@@ -221,7 +228,7 @@ def _build_mesh_tsdf(
 
     for s in range(S):
         depth = result.depth[s].astype(np.float32).copy()
-        depth[result.depth_conf[s] < conf_threshold] = 0.0   # 0 = invalid pixel
+        depth[result.depth_conf[s] < depth_conf_thr] = 0.0   # 0 = invalid pixel
 
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             o3d.geometry.Image(np.ascontiguousarray(result.images[s])),

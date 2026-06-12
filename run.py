@@ -60,9 +60,10 @@ def parse_args() -> argparse.Namespace:
                    help="'auto': VGGT-Omega on CUDA, VGGT-1B otherwise")
     p.add_argument("--device", type=str, default=None,
                    help="Force hardware backend (cuda / mps / cpu)")
-    p.add_argument("--conf", type=float, default=1.5,
-                   help="Confidence threshold for point filtering "
-                        "(higher → fewer but cleaner points)")
+    p.add_argument("--conf-percentile", type=float, default=20.0,
+                   help="Drop the least-confident X%% of points. Scene-adaptive: "
+                        "the threshold comes from each scene's own confidence "
+                        "distribution (higher → fewer but cleaner points)")
     p.add_argument("--semantic", action="store_true",
                    help="Run open-vocabulary semantic labeling (SAM2 + CLIP)")
     p.add_argument("--labels", type=str, default=None,
@@ -163,7 +164,7 @@ def main() -> None:
     t0 = time.time()
     scene = postprocess(
         result,
-        conf_threshold=args.conf,
+        conf_percentile=args.conf_percentile,
         build_mesh=args.mesh,
         mesh_method=args.mesh_method,
         output_dir=args.output,
@@ -305,7 +306,7 @@ def _save_run_info(
             "device":             str(device),
             "n_frames_requested": args.frames,
             "n_frames_extracted": n_frames_extracted,
-            "conf_threshold":     args.conf,
+            "conf_percentile":    args.conf_percentile,
             "image_size":         args.image_size,
             "semantic":           args.semantic,
             "mesh":               args.mesh,

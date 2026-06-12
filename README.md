@@ -102,7 +102,7 @@ python run.py path/to/video.mp4 --no-viewer
 | `--frames` | `50` | Frames to sample (auto-capped at 20 on MPS; 80–100 recommended on CUDA) |
 | `--model` | `auto` | `vggt-omega` on CUDA, `vggt` elsewhere |
 | `--device` | auto | Force `cuda` / `mps` / `cpu` |
-| `--conf` | `1.5` | Confidence threshold — higher = cleaner but sparser |
+| `--conf-percentile` | `20` | Drop the least-confident X% of points — scene-adaptive, no per-scene tuning needed |
 | `--semantic` | off | Enable SAM2 + CLIP semantic labeling |
 | `--labels` | 20 indoor classes | Custom comma-separated label list |
 | `--mesh` | off | Generate a coloured surface mesh |

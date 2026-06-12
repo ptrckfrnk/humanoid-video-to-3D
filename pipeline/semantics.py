@@ -3,7 +3,8 @@ Open-vocabulary semantic labeling via SAM 2.1 + OpenCLIP.
 
 For each video frame:
   1. SAM2AutomaticMaskGenerator produces instance masks (no prompts needed)
-  2. Each mask crop is encoded by OpenCLIP image encoder
+  2. Each mask crop — background pixels greyed out so CLIP sees the object,
+     not its surroundings — is encoded by OpenCLIP in batches
   3. Pre-encoded text embeddings for candidate labels are compared via cosine similarity
   4. Best-matching label assigned to every pixel in that mask
 
@@ -160,6 +161,7 @@ def _label_frame(
     text_features: torch.Tensor,   # (L, D)
     labels: List[str],
     device: torch.device,
+    batch_size: int = 64,
 ) -> np.ndarray:
     """Return (H, W) int32 array: index into labels, or -1 for unlabeled pixels."""
     from PIL import Image as PILImage
@@ -174,22 +176,36 @@ def _label_frame(
     # Largest masks first so small objects can override large background later
     masks = sorted(masks, key=lambda m: m["area"], reverse=True)
 
+    # ── Prepare all crops, then encode in batches ─────────────────────────────
+    crops: list[torch.Tensor] = []
+    segs:  list[np.ndarray]   = []
     for mask_info in masks:
         seg  = mask_info["segmentation"]                    # (H, W) bool
         x, y, bw, bh = [int(v) for v in mask_info["bbox"]]
         if bw < 10 or bh < 10:
             continue
 
-        crop       = frame_rgb[y : y + bh, x : x + bw]
-        pil_crop   = PILImage.fromarray(crop)
-        img_tensor = clip_preprocess(pil_crop).unsqueeze(0).to(device)
+        # Grey out background pixels inside the bbox so CLIP classifies the
+        # segmented object rather than whatever surrounds it.
+        crop = frame_rgb[y : y + bh, x : x + bw].copy()
+        crop[~seg[y : y + bh, x : x + bw]] = 127
 
-        with torch.inference_mode():
-            img_feat = clip_model.encode_image(img_tensor)
-            img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)    # (1, D)
-            sim      = (img_feat @ text_features.T).softmax(dim=-1)      # (1, L)
-            lbl_idx  = int(sim.argmax())
+        crops.append(clip_preprocess(PILImage.fromarray(crop)))
+        segs.append(seg)
 
+    if not crops:
+        return label_map
+
+    lbl_idxs: list[int] = []
+    with torch.inference_mode():
+        for i in range(0, len(crops), batch_size):
+            batch = torch.stack(crops[i : i + batch_size]).to(device)
+            feats = clip_model.encode_image(batch)
+            feats = feats / feats.norm(dim=-1, keepdim=True)        # (B, D)
+            lbl_idxs.extend((feats @ text_features.T).argmax(dim=-1).cpu().tolist())
+
+    # Paint in sorted order: large masks first, smaller ones override on top
+    for seg, lbl_idx in zip(segs, lbl_idxs):
         label_map[seg] = lbl_idx
 
     return label_map

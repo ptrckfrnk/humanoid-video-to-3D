@@ -94,7 +94,7 @@ Captured at decision time. The chosen approach is VGGT-1B/Omega + SAM2+CLIP — 
 
 | # | Priority | Task | Notes |
 |---|---|---|---|
-| B1 | **P1** | Tune `--conf` per scene (try 1.0–2.5) | Default 1.5 may be too tight or too loose depending on scene |
+| ~~B1~~ | ~~P1~~ | ~~Tune `--conf` per scene~~ | ✅ Done: replaced by scene-adaptive `--conf-percentile` (threshold from each scene's own confidence distribution) |
 | ~~B2~~ | ~~P2~~ | ~~Smarter frame sampling~~ | ✅ Done: farthest-point sampling on 64×64 thumbnails |
 | ~~B3~~ | ~~P2~~ | ~~Better mesh post-processing~~ | ✅ Done: downsampling fixed, depth=6 smoke-tested on MPS |
 | B4 | P2 | Texture projection onto mesh | Photorealistic mesh colours from video frames → UV map |
