@@ -1,5 +1,7 @@
 # Video → 3D Scene Reconstruction
 
+[![tests](https://github.com/ptrckfrnk/humanoid-video-to-3D/actions/workflows/tests.yml/badge.svg)](https://github.com/ptrckfrnk/humanoid-video-to-3D/actions/workflows/tests.yml)
+
 A feed-forward pipeline that takes a short indoor phone video and produces a geometrically coherent 3D scene — with optional open-vocabulary semantic labels.
 
 Built for the [Humanoid](https://humanoid.com) Perception & Spatial AI internship challenge.
@@ -148,7 +150,16 @@ outputs/
     └── run_info.json           # parameters + metrics for this run
 ```
 
-`run_info.json` records the full parameter set, point count, bounding box volume, average point density, and per-stage timings — useful for comparing runs after code or parameter changes.
+`run_info.json` records the full parameter set, per-stage timings, and a set of **self-evaluation metrics** computed without any ground truth, by exploiting the pipeline's redundancy (every frame predicts depth, and the merged cloud should agree with all of them):
+
+| Metric | What it measures |
+|---|---|
+| `multi_view_consistency` | Fraction of cloud points whose depth agrees with ≥ 2 frames' depth maps — points only their source frame believes in are likely noise |
+| `mean_views_per_point` | Average number of frames corroborating each point |
+| `median_rel_depth_error` | Median relative disagreement between the cloud and the depth maps |
+| `semantic_view_agreement` | Of all occlusion-tested label observations, the fraction agreeing with the fused majority label — direct measure of geometry-semantics coherence |
+
+This makes runs comparable on numbers rather than visual impressions when changing code or parameters.
 
 ### Viewing the outputs
 

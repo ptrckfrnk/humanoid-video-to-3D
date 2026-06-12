@@ -62,7 +62,9 @@ Captured at decision time. The chosen approach is VGGT-1B/Omega + SAM2+CLIP — 
 - [x] TSDF fusion meshing (default) — resolves B6, coloured mesh (pipeline/postprocess.py)
 - [x] Scene-adaptive --conf-percentile filtering — resolves B1
 - [x] Open-vocabulary 3D querying: per-segment CLIP features + sparse observation table, LERF-style relevancy (query.py, pipeline/openvocab.py)
-- [x] Unit test suite: geometry, fusion, TSDF, query scoring (tests/, 13 tests)
+- [x] Unit test suite: geometry, fusion, TSDF, query scoring, metrics (tests/, 16 tests)
+- [x] Self-evaluation metrics in run_info.json: multi-view consistency, depth error, semantic view agreement (pipeline/metrics.py)
+- [x] GitHub Actions CI: unit tests on every push (.github/workflows/tests.yml + README badge)
 - [x] Public repo pushed to GitHub (ptrckfrnk/humanoid-video-to-3D)
 - [ ] Real example videos shot and processed
 - [ ] High-fidelity outputs via cloud GPU (VGGT-Omega, 80 frames)

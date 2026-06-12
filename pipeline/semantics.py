@@ -67,6 +67,19 @@ class SemanticResult:
     mask_feats:      np.ndarray                     # (M, D) float16 CLIP features, L2-normalised
     obs_point:       np.ndarray                     # (K,) int32 observation table: point index
     obs_mask:        np.ndarray                     # (K,) int32 observation table: segment index
+    view_agreement:  float                          # fraction of observations agreeing with the
+                                                    # fused majority label (semantic coherence)
+
+
+@dataclass
+class FusionResult:
+    """Output of _fuse_labels."""
+    best:      np.ndarray   # (N,) winning label index per point (argmax of votes;
+                            # meaningless where n_votes == 0)
+    n_votes:   np.ndarray   # (N,) number of frames that cast a vote for the point
+    n_agree:   np.ndarray   # (N,) votes for the winning label
+    obs_point: np.ndarray   # (K,) int32 observation table: point index
+    obs_mask:  np.ndarray   # (K,) int32 observation table: global segment index
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -136,18 +149,26 @@ def label_scene(
     # ── Propagate 2D labels → 3D points (multi-view fusion) ──────────────────
     pts_all = np.asarray(scene.point_cloud.points)   # (N, 3)
 
-    best, n_votes, obs_point, obs_mask = _fuse_labels(
+    fusion = _fuse_labels(
         pts_all, seg_maps, mask_labels,
         result.extrinsics, result.intrinsics, result.depth,
         n_labels=len(labels),
     )
-    point_labels = np.where(n_votes > 0, best, -1)   # (N,) int; -1 = never observed
+    n_votes = fusion.n_votes
+    point_labels = np.where(n_votes > 0, fusion.best, -1)   # (N,) int; -1 = never observed
+
+    # Semantic coherence: of all occlusion-tested observations, how many agree
+    # with the fused majority label? 1.0 = every view said the same thing.
+    voted = n_votes > 0
+    view_agreement = (float(fusion.n_agree[voted].sum() / n_votes[voted].sum())
+                      if voted.any() else 0.0)
 
     n_labeled = int((point_labels >= 0).sum())
     console.print(
         f"  Multi-view fusion: {n_labeled:,}/{len(pts_all):,} points labeled "
         f"({100 * n_labeled / max(len(pts_all), 1):.0f}%), "
-        f"avg {n_votes[n_votes > 0].mean():.1f} views/point"
+        f"avg {n_votes[voted].mean():.1f} views/point, "
+        f"{100 * view_agreement:.0f}% view agreement"
         if n_labeled else
         "  [yellow]Multi-view fusion: no points received a label[/yellow]"
     )
@@ -173,8 +194,9 @@ def label_scene(
         label_set=labels,
         point_label_ids=point_labels.astype(np.int32),
         mask_feats=mask_feats,
-        obs_point=obs_point,
-        obs_mask=obs_mask,
+        obs_point=fusion.obs_point,
+        obs_mask=fusion.obs_mask,
+        view_agreement=view_agreement,
     )
 
 
@@ -259,7 +281,7 @@ def _fuse_labels(
     depth_maps:    np.ndarray,        # (S, H, W) metric depth
     n_labels:      int,
     occlusion_tol: float = 0.05,      # relative depth tolerance for visibility
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> FusionResult:
     """
     Fuse per-frame 2D segment maps into per-point 3D labels by majority vote,
     and record the point → segment observation table for open-vocab querying.
@@ -268,13 +290,6 @@ def _fuse_labels(
     its camera-space depth matches the frame's depth map at that pixel within
     `occlusion_tol` (relative) — i.e. the point is actually visible in that
     frame, not hidden behind a nearer surface.
-
-    Returns:
-        best:      (N,) int64 — winning label index per point (argmax of
-                   votes; meaningless where n_votes == 0)
-        n_votes:   (N,) int64 — number of frames that cast a vote for the point
-        obs_point: (K,) int32 — observation table: point index
-        obs_mask:  (K,) int32 — observation table: global segment index
     """
     N = len(pts_world)
     S, H, W = depth_maps.shape
@@ -316,7 +331,13 @@ def _fuse_labels(
     obs_mask  = (np.concatenate(obs_mask_chunks) if obs_mask_chunks
                  else np.zeros((0,), np.int32))
 
-    return votes.argmax(axis=1), votes.sum(axis=1, dtype=np.int64), obs_point, obs_mask
+    return FusionResult(
+        best=votes.argmax(axis=1),
+        n_votes=votes.sum(axis=1, dtype=np.int64),
+        n_agree=votes.max(axis=1).astype(np.int64),
+        obs_point=obs_point,
+        obs_mask=obs_mask,
+    )
 
 
 def _project_points(

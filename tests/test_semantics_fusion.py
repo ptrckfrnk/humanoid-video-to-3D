@@ -38,14 +38,14 @@ def test_occluded_point_gets_no_vote():
     depth, seg = _frame(depth_value=2.0, seg_idx=0)
     mask_labels = np.array([1], dtype=np.int32)   # segment 0 → label 1
 
-    best, n_votes, obs_p, obs_m = _fuse_labels(
+    r = _fuse_labels(
         pts, [seg], mask_labels,
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
-    assert n_votes[0] == 1 and best[0] == 1   # visible → labeled
-    assert n_votes[1] == 0                     # occluded → no vote
-    assert list(obs_p) == [0] and list(obs_m) == [0]
+    assert r.n_votes[0] == 1 and r.best[0] == 1   # visible → labeled
+    assert r.n_votes[1] == 0                       # occluded → no vote
+    assert list(r.obs_point) == [0] and list(r.obs_mask) == [0]
 
 
 def test_majority_vote_overrides_single_bad_frame():
@@ -56,28 +56,29 @@ def test_majority_vote_overrides_single_bad_frame():
     _, seg2 = _frame(2.0, 2)
     mask_labels = np.array([2, 0, 2], dtype=np.int32)
 
-    best, n_votes, *_ = _fuse_labels(
+    r = _fuse_labels(
         pts, [seg0, seg1, seg2], mask_labels,
         np.repeat(IDENTITY_POSE[None], 3, axis=0),
         np.repeat(K[None], 3, axis=0),
         np.repeat(d[None], 3, axis=0),
         n_labels=3,
     )
-    assert n_votes[0] == 3
-    assert best[0] == 2
+    assert r.n_votes[0] == 3
+    assert r.best[0] == 2
+    assert r.n_agree[0] == 2   # 2 of 3 views agreed with the majority
 
 
 def test_unsegmented_pixels_cast_no_vote():
     pts = np.array([[0.0, 0.0, 2.0]])
     depth, seg = _frame(2.0, -1)   # SAM found nothing here
 
-    best, n_votes, obs_p, obs_m = _fuse_labels(
+    r = _fuse_labels(
         pts, [seg], np.zeros((0,), np.int32),
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
-    assert n_votes[0] == 0
-    assert len(obs_p) == 0 and len(obs_m) == 0
+    assert r.n_votes[0] == 0
+    assert len(r.obs_point) == 0 and len(r.obs_mask) == 0
 
 
 def test_point_outside_frustum_gets_no_vote():
@@ -86,12 +87,12 @@ def test_point_outside_frustum_gets_no_vote():
                     [50.0, 0.0, 2.0]])
     depth, seg = _frame(2.0, 0)
 
-    _, n_votes, *_ = _fuse_labels(
+    r = _fuse_labels(
         pts, [seg], np.array([1], np.int32),
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
-    assert (n_votes == 0).all()
+    assert (r.n_votes == 0).all()
 
 
 def test_occlusion_tolerance_is_relative():
@@ -101,13 +102,13 @@ def test_occlusion_tolerance_is_relative():
     pts = np.array([[0.0, 0.0, 2.0 * 1.03],
                     [0.0, 0.0, 2.0 * 1.10]])
 
-    _, n_votes, *_ = _fuse_labels(
+    r = _fuse_labels(
         pts, [seg], np.array([1], np.int32),
         IDENTITY_POSE[None], K[None], depth[None],
         n_labels=3,
     )
-    assert n_votes[0] == 1
-    assert n_votes[1] == 0
+    assert r.n_votes[0] == 1
+    assert r.n_votes[1] == 0
 
 
 def test_observation_table_matches_visibility():
@@ -118,16 +119,16 @@ def test_observation_table_matches_visibility():
     d_occl, seg1 = _frame(1.0, 1)
     mask_labels = np.array([1, 2], dtype=np.int32)
 
-    _, n_votes, obs_p, obs_m = _fuse_labels(
+    r = _fuse_labels(
         pts, [seg0, seg1], mask_labels,
         np.repeat(IDENTITY_POSE[None], 2, axis=0),
         np.repeat(K[None], 2, axis=0),
         np.stack([d_match, d_occl]),
         n_labels=3,
     )
-    assert n_votes[0] == 1
-    assert list(obs_p) == [0]
-    assert list(obs_m) == [0]   # only the frame-0 segment observed it
+    assert r.n_votes[0] == 1
+    assert list(r.obs_point) == [0]
+    assert list(r.obs_mask) == [0]   # only the frame-0 segment observed it
 
 
 def test_backproject_project_roundtrip():

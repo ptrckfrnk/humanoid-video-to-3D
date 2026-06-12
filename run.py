@@ -174,6 +174,17 @@ def main() -> None:
     n_pts = len(scene.point_cloud.points)
     console.print(f"           → {n_pts:,} points  ({timings['postprocess']:.1f}s)")
 
+    # Self-evaluation: cross-view consistency of the cloud vs every depth map
+    from pipeline.metrics import geometry_metrics
+    geo_metrics = geometry_metrics(result, scene.point_cloud)
+    if geo_metrics:
+        console.print(
+            f"           [dim]self-check: "
+            f"{geo_metrics['multi_view_consistency'] * 100:.0f}% multi-view consistent · "
+            f"{geo_metrics['mean_views_per_point']:.1f} views/point · "
+            f"median depth err {geo_metrics['median_rel_depth_error'] * 100:.2f}%[/dim]"
+        )
+
     # ── Stage 4: Semantics ────────────────────────────────────────────────────
     semantic = None
     if args.semantic:
@@ -240,7 +251,7 @@ def main() -> None:
 
     # ── Save run metadata ─────────────────────────────────────────────────────
     timings["total"] = round(time.time() - t_run_start, 2)
-    _save_run_info(args, device, len(frame_paths), scene, semantic, timings)
+    _save_run_info(args, device, len(frame_paths), scene, semantic, timings, geo_metrics)
     console.print(f"  [green]✓[/green] Run metadata    → {args.output / 'run_info.json'}")
 
     # ── Turntable GIF ─────────────────────────────────────────────────────────
@@ -303,6 +314,7 @@ def _save_run_info(
     scene,
     semantic,
     timings: dict,
+    geo_metrics: dict,
 ) -> None:
     import open3d as o3d
 
@@ -337,7 +349,10 @@ def _save_run_info(
             "n_points":           len(pts),
             "bbox_volume_m3":     round(vol, 4),
             "avg_nn_dist_m":      round(avg_nn, 6),
+            **geo_metrics,
             "n_semantic_classes": len(set(semantic.labels)) if semantic else None,
+            "semantic_view_agreement": (round(semantic.view_agreement, 4)
+                                        if semantic else None),
         },
         "timings_s": timings,
     }
